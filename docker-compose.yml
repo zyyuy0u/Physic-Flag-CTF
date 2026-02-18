@@ -1,0 +1,56 @@
+# IoT 蜜罐系統 - Docker Compose 服務編排
+# 包含：資料庫、受害網站、防禦監控 三大服務
+
+services:
+  # 資料庫服務
+  db:
+    image: mariadb:10.6
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - honeypot-net
+
+  # 受害網站服務（含 SQL 注入與指令注入漏洞）
+  web-app:
+    build: ./web
+    container_name: web-app
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./web/src:/var/www/html
+    environment:
+      DB_HOST: db
+      DB_USER: ${MYSQL_USER}
+      DB_PASS: ${MYSQL_PASSWORD}
+      DB_NAME: ${MYSQL_DATABASE}
+    depends_on:
+      - db
+    networks:
+      - honeypot-net
+
+  # 防禦監控服務（Docker Log 分析 + Netstat 監控 + GPIO LED 警示）
+  # privileged: true — 必須設定，以便存取 /dev/gpiomem 控制 GPIO
+  defense-system:
+    build: ./defense
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - ./defense:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: python3 -u /app/monitor.py
+    networks:
+      - honeypot-net
+
+volumes:
+  db_data:
+
+networks:
+  honeypot-net:
+    driver: bridge

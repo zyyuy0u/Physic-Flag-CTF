@@ -1,0 +1,7 @@
+RewriteEngine On
+RewriteRule ^admin$ admin_login_v2.php [L]
+
+# 禁止從瀏覽器直接存取資料庫初始化工具
+<Files "setup_db.php">
+    Require all denied
+</Files>
