@@ -64,8 +64,8 @@ WEB_SERVICE_PORT = "80"
 # ---------------------------------------------------------------------------
 # LED1：比對 Apache Log 中的 GET /admin 路徑存取
 # 範例命中：GET /admin HTTP/1.1、GET /admin/ HTTP/1.1、GET /admin?x=1 HTTP/1.1
-# [\s/\?] 確保是完整的 /admin 路徑，避免誤判 /administrator 等
-ADMIN_PATTERN = re.compile(r'GET /admin[\s/\?]')
+# [\s/?] 確保是完整的 /admin 路徑，避免誤判 /administrator 等
+ADMIN_PATTERN = re.compile(r'GET /admin[\s/?]')
 
 # LED2：比對 Apache Log 中 dashboard.php 回傳 HTTP 200 的紀錄
 # 範例命中："GET /dashboard.php HTTP/1.1" 200 1234

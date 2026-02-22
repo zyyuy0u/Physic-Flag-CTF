@@ -9,12 +9,18 @@ RUN docker-php-ext-install mysqli pdo pdo_mysql
 #   iputils-ping：提供 ping，供網路診斷頁面使用
 #   netcat-traditional：提供 nc（含 -e 參數），可用於建立 Reverse Shell
 #   python3：提供 python3，可用於建立 Reverse Shell
+#   perl：提供 perl，可用於建立 Reverse Shell
+#   socat：提供 socat，可用於建立 Reverse Shell
+#   curl：提供 curl，可用於下載惡意腳本
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         net-tools \
         iputils-ping \
         netcat-traditional \
-        python3 && \
+        python3 \
+        perl \
+        socat \
+        curl && \
     rm -rf /var/lib/apt/lists/*
 
 # 啟用 URL 重寫模組

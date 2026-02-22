@@ -1,0 +1,177 @@
+' ============================================================
+' 圖一：系統啟動流程
+' ============================================================
+@startuml 01_system_startup
+title 系統啟動流程
+
+actor "管理員" as Admin
+participant "Docker Compose" as DC
+database "db\n(MariaDB)" as DB
+participant "web-app\n(PHP+Apache)" as Web
+participant "defense-system\n(Python)" as Defense
+participant "GPIO LED" as LED
+
+autonumber
+
+Admin -> DC: 啟動所有服務
+activate DC
+DC -> DB: 啟動資料庫容器
+activate DB
+DC -> Web: 啟動網站容器
+activate Web
+DC -> Defense: 啟動防禦監控容器
+activate Defense
+DC --> Admin: 所有容器啟動完成
+deactivate DC
+
+== 資料庫初始化（首次部署） ==
+
+Admin -> Web: 執行資料庫初始化腳本
+Web -> DB: 建立使用者資料表
+DB --> Web: 建立成功
+Web -> DB: 新增管理員與誘餌帳號
+DB --> Web: 新增成功
+Web --> Admin: 初始化完成
+
+== 防禦系統初始化 ==
+
+Defense -> Web: 查詢容器所屬 Docker 網段
+Web --> Defense: 回傳網路設定
+
+Defense -> Defense: 建立 IP 白名單\n（Loopback + Link-local + Docker 網段）
+
+Defense -> LED: 初始化 GPIO 腳位\n（全部設為熄滅狀態）
+
+Defense -> Web: 啟動執行緒 A\n（持續串流 Docker Log）
+Defense -> Web: 啟動執行緒 B\n（持續監控網路連線）
+
+note over Defense: 系統就緒\n兩個執行緒持續監控中
+
+@enduml
+
+
+' ============================================================
+' 圖二：LED1 觸發流程 — /admin 路徑探測偵測
+' ============================================================
+@startuml 02_led1_admin_probe
+title LED1 觸發流程 — 路徑探測偵測
+
+actor "攻擊者" as Attacker
+participant "web-app" as Web
+participant "defense-system\n(執行緒 A)" as ThreadA
+participant "LED1\nGPIO 22" as LED1
+
+autonumber
+
+Attacker -> Web: 存取 /admin 路徑
+activate Web
+Web -> Web: URL Rewrite 至管理員登入頁面
+Web --> Attacker: 回傳登入頁面
+deactivate Web
+
+note over Web: 寫入 Docker Log
+
+ThreadA -> Web: 透過 docker logs -f\n串流讀取 Docker Log
+activate ThreadA
+Web --> ThreadA: 輸出新 Log 行
+
+ThreadA -> ThreadA: 使用 Regex 比對\n偵測到 /admin 路徑存取
+
+ThreadA -> LED1: 點亮 LED1
+activate LED1
+note over LED1: LED1 常亮（不自動熄滅）
+
+deactivate ThreadA
+
+@enduml
+
+
+' ============================================================
+' 圖三：LED2 觸發流程 — SQL Injection 繞過偵測
+' ============================================================
+@startuml 03_led2_sql_injection
+title LED2 觸發流程 — SQL Injection 繞過偵測
+
+actor "攻擊者" as Attacker
+participant "web-app" as Web
+database "db\n(MariaDB)" as DB
+participant "defense-system\n(執行緒 A)" as ThreadA
+participant "LED2\nGPIO 24" as LED2
+
+autonumber
+
+Attacker -> Web: 提交惡意登入表單\n（SQL Injection Payload）
+activate Web
+
+Web -> DB: 執行未過濾的 SQL 查詢
+activate DB
+note over DB: 注入條件永遠為真\n回傳第一筆使用者資料
+DB --> Web: 查詢成功（1 筆）
+deactivate DB
+
+Web -> Web: 驗證通過\n建立已登入 Session
+Web --> Attacker: 重導至儀表板頁面
+deactivate Web
+
+Attacker -> Web: 存取儀表板頁面
+activate Web
+Web --> Attacker: 回傳儀表板（HTTP 200）
+deactivate Web
+
+note over Web: 寫入 Docker Log\n（dashboard.php 回傳 200）
+
+ThreadA -> Web: 透過 docker logs -f\n串流讀取 Docker Log
+activate ThreadA
+Web --> ThreadA: 輸出新 Log 行
+
+ThreadA -> ThreadA: 使用 Regex 比對\n偵測到 dashboard.php\n回傳 HTTP 200
+
+ThreadA -> LED2: 點亮 LED2
+activate LED2
+note over LED2: LED2 常亮（不自動熄滅）
+
+deactivate ThreadA
+
+@enduml
+
+
+' ============================================================
+' 圖四：LED3 觸發流程 — Reverse Shell 偵測
+' ============================================================
+@startuml 04_led3_reverse_shell
+title LED3 觸發流程 — Reverse Shell 偵測
+
+actor "攻擊者" as Attacker
+participant "web-app" as Web
+participant "defense-system\n(執行緒 B)" as ThreadB
+participant "LED3\nGPIO 25" as LED3
+
+autonumber
+
+note over Attacker: 攻擊者先在本機\n開啟監聽等待連線
+
+Attacker -> Web: 透過網路診斷頁面\n注入 Reverse Shell 指令
+activate Web
+
+Web -> Web: 執行被注入的指令
+
+Web -> Attacker: 容器主動對外建立連線\n（Reverse Shell）
+activate Attacker
+note over Attacker: 成功取得\n容器控制權
+deactivate Web
+
+ThreadB -> Web: 每秒取得網路連線快照
+activate ThreadB
+Web --> ThreadB: 回傳目前所有連線
+
+ThreadB -> ThreadB: 第一層過濾：\nLocalhost Port 非 80\n→ 非正常 HTTP 連線
+
+ThreadB -> ThreadB: 第二層過濾：\n遠端 IP 不在白名單中\n→ 判定為 Reverse Shell
+
+ThreadB -> LED3: 點亮 LED3
+activate LED3
+note over LED3: LED3 常亮（不自動熄滅）
+
+deactivate ThreadB
+
+@enduml

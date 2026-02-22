@@ -1,0 +1,70 @@
+' ============================================================
+' 實驗進行流程圖
+' ============================================================
+@startuml experiment_flowchart
+title 實驗進行流程圖
+
+start
+
+partition "環境建置" {
+  :在 Raspberry Pi 上安裝
+  Docker 與 Docker Compose;
+
+  :連接 LED 燈至 GPIO Pin
+  （LED1: GPIO 22、LED2: GPIO 24、LED3: GPIO 25）;
+
+  :啟動所有服務
+  docker compose up -d;
+
+  :執行資料庫初始化;
+
+  :確認所有 Container 正常運行
+  確認三顆 LED 皆為熄滅狀態;
+}
+
+partition "階段一：路徑探測" {
+  :攻擊者存取 /admin 路徑;
+
+  :系統透過 Docker Log 偵測到
+  /admin 路徑存取;
+
+  :LED1 亮起;
+}
+
+partition "階段二：SQL Injection" {
+  :攻擊者在登入頁面輸入
+  SQL Injection Payload;
+
+  :系統執行未參數化的 SQL Query
+  攻擊者成功繞過驗證;
+
+  :攻擊者進入 Dashboard
+  系統偵測到 dashboard.php 回傳 HTTP 200;
+
+  :LED2 亮起;
+}
+
+partition "階段三：Reverse Shell" {
+  :攻擊者在本機開啟 Listener
+  等待連線;
+
+  :攻擊者透過網路診斷頁面
+  注入 Reverse Shell 指令;
+
+  :Web Container 主動對外建立連線
+  攻擊者取得 Container 控制權;
+
+  :系統偵測到 Local Port 非 80
+  且目標連線 IP 不在 Whitelist 中;
+
+  :LED3 亮起;
+}
+
+partition "實驗結果" {
+  :三顆 LED 皆亮起
+  代表三個攻擊階段皆被成功偵測;
+}
+
+stop
+
+@enduml

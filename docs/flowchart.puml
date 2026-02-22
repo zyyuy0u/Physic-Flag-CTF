@@ -1,0 +1,67 @@
+' ============================================================
+' 程式邏輯實作流程圖 — 防禦監控系統 (monitor.py)
+' ============================================================
+@startuml program_logic_flowchart
+title 防禦監控系統程式邏輯流程圖
+
+start
+
+:顯示系統資訊;
+
+:透過 docker inspect
+查詢 Web Container 所屬網段;
+
+:建立 IP Whitelist
+（Loopback + Link-local + Docker Subnet）;
+
+:初始化 GPIO Pin
+（全部設為 LOW）;
+
+fork
+  :啟動 Thread A;
+
+  :執行 docker logs -f
+  串流讀取 Docker Log;
+
+  while (持續讀取 Log) is (有新 Log Entry)
+    if (Regex 比對到\nGET /admin 路徑？) then (是)
+      :點亮 LED1（GPIO 22）;
+    else (否)
+      :未命中，不動作;
+    endif
+
+    if (Regex 比對到\ndashboard.php HTTP 200？) then (是)
+      :點亮 LED2（GPIO 24）;
+    else (否)
+      :未命中，不動作;
+    endif
+  endwhile
+
+fork again
+  :啟動 Thread B;
+
+  :在 Web Container 內啟動
+  持續執行的 netstat;
+
+  while (持續讀取 netstat 輸出) is (有新連線資料)
+    if (連線狀態為\nESTABLISHED？) then (是)
+      if (Local Port = 80？) then (是)
+        :正常 HTTP 連線，跳過;
+      else (否)
+        if (Remote IP\n在 Whitelist 中？) then (是)
+          :容器間內部通訊，跳過;
+        else (否)
+          :判定為 Reverse Shell
+          點亮 LED3（GPIO 25）;
+        endif
+      endif
+    else (否)
+      :非已建立連線，跳過;
+    endif
+  endwhile
+
+end fork
+
+stop
+
+@enduml
