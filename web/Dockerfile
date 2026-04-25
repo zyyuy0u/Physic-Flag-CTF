@@ -35,6 +35,6 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 80
 
-# 使用啟動腳本
-ENTRYPOINT ["entrypoint.sh"]
+# 使用絕對路徑
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["apache2-foreground"]
