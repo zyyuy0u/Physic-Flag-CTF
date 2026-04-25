@@ -1,6 +1,9 @@
 ' ============================================================
 ' 程式邏輯實作流程圖 — 防禦監控系統 (monitor.py)
 ' ============================================================
+' 本圖僅描述系統的程式邏輯與偵測機制，
+' 不涉及特定攻擊情境（攻擊驗證屬於後續滲透測試階段）。
+' ============================================================
 @startuml program_logic_flowchart
 title 防禦監控系統程式邏輯流程圖
 
@@ -18,45 +21,49 @@ start
 （全部設為 LOW）;
 
 fork
-  :啟動 Thread A;
+  :啟動執行緒 A
+  （Docker Log 監控）;
 
-  :執行 docker logs -f
-  串流讀取 Docker Log;
+  :透過 subprocess.Popen 執行
+  docker logs -f --tail 0
+  持續串流讀取 Container Log;
 
-  while (持續讀取 Log) is (有新 Log Entry)
-    if (Regex 比對到\nGET /admin 路徑？) then (是)
-      :點亮 LED1（GPIO 22）;
-    else (否)
-      :未命中，不動作;
+  while (逐行讀取 Log Entry) is (收到新行)
+    if (Regex 比對\n符合偵測規則 A？) then (命中)
+      :輸出 GPIO 訊號
+      點亮 LED1;
+    else (未命中)
     endif
 
-    if (Regex 比對到\ndashboard.php HTTP 200？) then (是)
-      :點亮 LED2（GPIO 24）;
-    else (否)
-      :未命中，不動作;
+    if (Regex 比對\n符合偵測規則 B？) then (命中)
+      :輸出 GPIO 訊號
+      點亮 LED2;
+    else (未命中)
     endif
   endwhile
 
 fork again
-  :啟動 Thread B;
+  :啟動執行緒 B
+  （網路連線監控）;
 
-  :在 Web Container 內啟動
-  持續執行的 netstat;
+  :透過 docker exec 在
+  Container 內啟動持續執行的
+  netstat 程序;
 
-  while (持續讀取 netstat 輸出) is (有新連線資料)
+  while (每秒讀取連線快照) is (收到新資料)
     if (連線狀態為\nESTABLISHED？) then (是)
       if (Local Port = 80？) then (是)
-        :正常 HTTP 連線，跳過;
+        :正常 HTTP 連線，略過;
       else (否)
         if (Remote IP\n在 Whitelist 中？) then (是)
-          :容器間內部通訊，跳過;
+          :Docker 內部通訊，略過;
         else (否)
-          :判定為 Reverse Shell
-          點亮 LED3（GPIO 25）;
+          :輸出 GPIO 訊號
+          點亮 LED3;
         endif
       endif
     else (否)
-      :非已建立連線，跳過;
+      :非已建立連線，略過;
     endif
   endwhile
 

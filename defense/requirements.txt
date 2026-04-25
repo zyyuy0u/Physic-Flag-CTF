@@ -1,2 +1,3 @@
 # 防禦監控系統 Python 相依套件
-RPi.GPIO==0.7.1    # Raspberry Pi GPIO 控制
+RPi.GPIO
+pigpio
