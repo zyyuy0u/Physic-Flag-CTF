@@ -29,4 +29,12 @@ RUN a2enmod rewrite
 # 允許 .htaccess 檔案覆蓋配置
 RUN sed -i '/<Directory \/var\/www\/>/,/<\/Directory>/ s/AllowOverride None/AllowOverride All/' /etc/apache2/apache2.conf
 
+# 複製並設定啟動腳本
+COPY entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 EXPOSE 80
+
+# 使用啟動腳本
+ENTRYPOINT ["entrypoint.sh"]
+CMD ["apache2-foreground"]

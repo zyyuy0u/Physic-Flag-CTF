@@ -10,7 +10,6 @@ $user = getenv('DB_USER') ?: 'webuser';
 $pass = getenv('DB_PASS') ?: 'webpass123';
 $db   = getenv('DB_NAME') ?: 'honeypot';
 
-echo "<pre>\n";
 echo "=== SmartHome IoT Hub - 資料庫初始化 ===\n\n";
 
 $conn = new mysqli($host, $user, $pass, $db);
@@ -59,7 +58,6 @@ foreach ($decoys as $d) {
 }
 
 echo "\n=== 初始化完成 ===\n";
-echo "</pre>\n";
 
 $conn->close();
 ?>

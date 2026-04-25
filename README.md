@@ -81,11 +81,11 @@ sudo pigpiod
 git clone https://github.com/<your-username>/iot-honeypot.git
 cd iot-honeypot
 
-# 3. 啟動所有服務
+# 3. 啟動所有服務 (系統會自動初始化資料庫)
 docker compose up -d
 
-# 4. 初始化資料庫
-docker exec web-app php /var/www/html/setup_db.php
+# 4. 確認服務狀態
+docker compose ps
 ```
 
 ## 技術棧
