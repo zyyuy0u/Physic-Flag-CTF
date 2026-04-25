@@ -12,12 +12,23 @@ $db   = getenv('DB_NAME') ?: 'honeypot';
 
 echo "=== SmartHome IoT Hub - 資料庫初始化 ===\n\n";
 
-$conn = new mysqli($host, $user, $pass, $db);
+// 1. 先連向伺服器（不指定資料庫）
+$conn = new mysqli($host, $user, $pass);
 
 if ($conn->connect_error) {
-    die("連線失敗：" . $conn->connect_error . "\n");
+    die("[錯誤] 無法連線至資料庫伺服器：" . $conn->connect_error . "\n");
 }
-echo "[成功] 已連線至資料庫 '$db'\n";
+
+// 2. 建立資料庫
+if ($conn->query("CREATE DATABASE IF NOT EXISTS `$db`")) {
+    echo "[成功] 資料庫 '$db' 已就緒\n";
+} else {
+    die("[錯誤] 無法建立資料庫： " . $conn->error . "\n");
+}
+
+// 3. 切換至該資料庫
+$conn->select_db($db);
+echo "[成功] 已切換至資料庫 '$db'\n";
 
 // 建立使用者資料表
 $sql = "CREATE TABLE IF NOT EXISTS users (
