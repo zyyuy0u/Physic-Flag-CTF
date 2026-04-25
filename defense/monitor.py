@@ -108,10 +108,14 @@ def hardware_setup():
     # LED 初始化
     GPIO.setwarnings(False)
     GPIO.setmode(GPIO.BCM)
-    GPIO.setup(PIN_NORMAL, GPIO.OUT, initial=GPIO.HIGH) # 綠燈亮
-    GPIO.setup(PIN_ALARM, GPIO.OUT, initial=GPIO.LOW)  # 紅燈滅
+    # 強制重置：綠燈亮、紅燈滅
+    GPIO.setup(PIN_NORMAL, GPIO.OUT)
+    GPIO.setup(PIN_ALARM, GPIO.OUT)
+    GPIO.output(PIN_NORMAL, GPIO.HIGH) # 綠燈亮 (系統正常)
+    GPIO.output(PIN_ALARM, GPIO.LOW)   # 紅燈滅 (無警報)
 
-    # 馬達初始化 (連向宿主機 pigpiod)
+    # 馬達初始化...
+
     host_ip = get_host_gateway_ip()
     logging.info("嘗試連接 pigpiod @ %s", host_ip)
     pi = pigpio.pi(host_ip)
@@ -148,6 +152,8 @@ def trigger_attack_event(label=""):
 # ---------------------------------------------------------------------------
 def docker_log_monitor():
     logging.info("[執行緒-A] Docker Log 監控啟動")
+    # 增加 2 秒延遲，防止容器啟動時的 Access Log 誤觸警報
+    time.sleep(2)
     while True:
         try:
             proc = subprocess.Popen(
