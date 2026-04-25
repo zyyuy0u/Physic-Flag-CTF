@@ -74,8 +74,17 @@
 ## 快速部署
 
 ```bash
-# 1. 啟動宿主機 pigpio 守護行程
-sudo pigpiod
+# 1. 啟動宿主機 pigpio 守護行程（必須加 -n 允許 Docker 容器連線）
+sudo pigpiod -n 0.0.0.0
+
+# 1a. (建議) 設定開機自動啟動，就不用每次手動執行
+sudo systemctl edit pigpiod
+#    貼入以下內容：
+#    [Service]
+#    ExecStart=
+#    ExecStart=/usr/bin/pigpiod -n 0.0.0.0
+sudo systemctl daemon-reload
+sudo systemctl enable --now pigpiod
 
 # 2. Clone 專案
 git clone https://github.com/<your-username>/iot-honeypot.git
