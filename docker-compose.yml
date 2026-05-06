@@ -35,12 +35,20 @@ services:
     networks:
       - honeypot-net
 
-  # 防禦監控服務（Docker Log 分析 + Netstat 監控 + GPIO LED 警示）
-  # privileged: true — 必須設定，以便存取 /dev/gpiomem 控制 GPIO
+  # 防禦監控服務（Docker Log 分析 + eBPF Reverse Shell 偵測 + GPIO 警示）
+  # privileged: true       — GPIO + BPF 載入皆需要
+  # pid: host              — 才能從 /proc 解析 web-app 的 cgroup id
+  # /sys/kernel/debug      — tracepoint 註冊路徑
+  # /sys/fs/bpf            — BPF map / program pinning
+  # /lib/modules /usr/src  — bcc runtime compile 需要 kernel headers / BTF
   defense-system:
     build: ./defense
     restart: unless-stopped
     privileged: true
+    pid: host
+    cgroup: host                           # 必要：讓容器看見宿主機 cgroup hierarchy
+    depends_on:
+      - web-app                            # 確保 web-app cgroup 在 defense 啟動前已存在
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -49,6 +57,11 @@ services:
     volumes:
       - ./defense:/app
       - /var/run/docker.sock:/var/run/docker.sock
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+      - /sys/fs/bpf:/sys/fs/bpf
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /lib/modules:/lib/modules:ro
+      - /usr/src:/usr/src:ro
     command: python3 -u /app/monitor.py
     networks:
       - honeypot-net
