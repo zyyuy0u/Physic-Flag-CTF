@@ -206,25 +206,20 @@ def docker_log_monitor():
         time.sleep(2)
 
 def motor_cooldown_reset():
-    """冷卻結束後將標靶物理復位，再清除 motor_triggered 旗標。
+    """冷卻結束後重置 motor_triggered 旗標。
 
-    沒有這段的話：擊倒後第一次觸發成功（pulse=1500），冷卻 5s 後雖然
-    motor_triggered 清回 False，但 servo 仍卡在 1500 — 下一次攻擊送 1500
-    等同沒動作，demo 第二輪會看不到反應。
+    刻意 *不* 把 servo 推回 SERVO_UP — 這是 demo 設計：擊倒後標靶要持續
+    保持倒下狀態作為「系統已被攻擊」的視覺證據，直到人工觸發 docker compose
+    restart（會走 shutdown_handler → servo 回 500）才會復位。
+
+    後續攻擊會繼續觸發 [MOTOR] log（用於偵測率統計），但 servo 已經在
+    SERVO_DOWN，再送相同脈寬不會有實體動作。
     """
     global motor_triggered
     time.sleep(MOTOR_COOLDOWN)
     with motor_lock:
-        if pi and pi.connected:
-            try:
-                pi.set_servo_pulsewidth(PIN_SERVO, SERVO_UP)
-                time.sleep(1)                           # 等實體動作完成
-                pi.set_servo_pulsewidth(PIN_SERVO, 0)   # 停 PWM 防 SG90 抖動
-                log.info("[MOTOR] 標靶已復位 (pulse=%d)", SERVO_UP)
-            except Exception as e:
-                log.error("[MOTOR] 復位失敗: %s", e)
         motor_triggered = False
-    log.info("[MOTOR] 馬達冷卻結束，可再次觸發")
+    log.info("[MOTOR] 馬達冷卻結束，可再次觸發（標靶保持倒下，需重啟系統復位）")
 
 def _normalize_addr(ip_str):
     """把 IPv4-mapped IPv6（::ffff:1.2.3.4）轉回 IPv4，方便用 IPv4 白名單比對"""
