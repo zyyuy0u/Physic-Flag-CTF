@@ -25,7 +25,16 @@ echo
 # 抓現在 log 行數作為 baseline，後面只看新增的行
 BASELINE=$(docker logs "$CONTAINER" 2>&1 | wc -l)
 new_logs() { docker logs "$CONTAINER" 2>&1 | tail -n +$((BASELINE + 1)); }
-check()    { new_logs | grep -q "$1" && echo "  [PASS] $1" || echo "  [FAIL] $1"; }
+
+FAIL_COUNT=0
+check() {
+    if new_logs | grep -q "$1"; then
+        echo "  [PASS] $1"
+    else
+        echo "  [FAIL] $1"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
 
 # -------- Stage 1: LED1 (/admin 路徑探測) --------
 echo "====== Stage 1: LED1 (/admin probe) ======"
@@ -41,7 +50,8 @@ CSRF=$(curl -s -c "$COOKIE" "$BASE_URL/admin_login_v2.php" \
        | grep -oE 'name="csrf_token"[^>]+value="[^"]+"' \
        | grep -oE 'value="[^"]+"' | cut -d'"' -f2)
 if [ -z "$CSRF" ]; then
-    echo "  [SKIP] 無法取得 CSRF token，可能登入頁結構變了"
+    echo "  [FAIL] 無法取得 CSRF token，可能登入頁結構變了"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
 else
     curl -s -b "$COOKIE" -c "$COOKIE" -X POST "$BASE_URL/admin_login_v2.php" \
         --data-urlencode "username=' OR 1=1 -- " \
@@ -69,3 +79,12 @@ new_logs | grep "\[LATENCY\]" || echo "  (未捕捉到 [LATENCY]，可能 Stage 
 echo
 echo "====== 完整新增 log（debug 用）======"
 new_logs | grep -E '\[(LED1|LED2|MOTOR|LATENCY|執行緒)' | head -30
+
+echo
+if [ "$FAIL_COUNT" -gt 0 ]; then
+    echo "====== 結果：FAIL（$FAIL_COUNT 個檢查失敗）======"
+    exit 1
+else
+    echo "====== 結果：PASS（三階段全通）======"
+    exit 0
+fi

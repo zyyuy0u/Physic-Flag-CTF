@@ -121,28 +121,34 @@ def connect_pigpio():
     return None
 
 def shutdown_handler(signum, frame):
+    """安全清理：必須拿 motor_lock 與 Thread B 互斥，否則 set_servo_pulsewidth
+    可能跟 bpf_event_consumer 同時操作 pi，造成 race。motor_triggered = True
+    並 latch 住，阻止 Thread B 在清理過程中再插指令。"""
+    global motor_triggered
     log.info("接收到訊號，執行安全清理...")
-    if GPIO_AVAILABLE:
-        # 先關燈
-        try:
-            GPIO.output(PIN_GREEN, GPIO.LOW)
-            GPIO.output(PIN_RED, GPIO.LOW)
-        except Exception:
-            pass
-        # 再關馬達
-        if pi and pi.connected:
+    with motor_lock:
+        motor_triggered = True   # latch — 阻止 Thread B 觸發新的 servo 指令
+        if GPIO_AVAILABLE:
+            # 先關燈
             try:
-                pi.set_servo_pulsewidth(PIN_SERVO, SERVO_UP)
-                time.sleep(1)
-                pi.set_servo_pulsewidth(PIN_SERVO, 0)
-                pi.stop()
+                GPIO.output(PIN_GREEN, GPIO.LOW)
+                GPIO.output(PIN_RED, GPIO.LOW)
             except Exception:
                 pass
-        # 最後清理 GPIO
-        try:
-            GPIO.cleanup()
-        except Exception:
-            pass
+            # 再關馬達
+            if pi and pi.connected:
+                try:
+                    pi.set_servo_pulsewidth(PIN_SERVO, SERVO_UP)
+                    time.sleep(1)
+                    pi.set_servo_pulsewidth(PIN_SERVO, 0)
+                    pi.stop()
+                except Exception:
+                    pass
+            # 最後清理 GPIO
+            try:
+                GPIO.cleanup()
+            except Exception:
+                pass
     sys.exit(0)
 
 signal.signal(signal.SIGTERM, shutdown_handler)
@@ -200,10 +206,23 @@ def docker_log_monitor():
         time.sleep(2)
 
 def motor_cooldown_reset():
-    """冷卻結束後重置 motor_triggered 旗標"""
+    """冷卻結束後將標靶物理復位，再清除 motor_triggered 旗標。
+
+    沒有這段的話：擊倒後第一次觸發成功（pulse=1500），冷卻 5s 後雖然
+    motor_triggered 清回 False，但 servo 仍卡在 1500 — 下一次攻擊送 1500
+    等同沒動作，demo 第二輪會看不到反應。
+    """
     global motor_triggered
     time.sleep(MOTOR_COOLDOWN)
     with motor_lock:
+        if pi and pi.connected:
+            try:
+                pi.set_servo_pulsewidth(PIN_SERVO, SERVO_UP)
+                time.sleep(1)                           # 等實體動作完成
+                pi.set_servo_pulsewidth(PIN_SERVO, 0)   # 停 PWM 防 SG90 抖動
+                log.info("[MOTOR] 標靶已復位 (pulse=%d)", SERVO_UP)
+            except Exception as e:
+                log.error("[MOTOR] 復位失敗: %s", e)
         motor_triggered = False
     log.info("[MOTOR] 馬達冷卻結束，可再次觸發")
 
