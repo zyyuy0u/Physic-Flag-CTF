@@ -8,10 +8,16 @@
  * IPv4/IPv6 source and destination addresses, and process comm.
  */
 
-#include <uapi/linux/ptrace.h>
-#include <net/sock.h>
-#include <linux/in.h>
-#include <linux/in6.h>
+/*
+ * 不 #include <net/sock.h> / <linux/in.h> / <linux/in6.h>：
+ *   - <net/sock.h> 會輾轉拉進 <linux/bpf.h>，在 kernel 6.10+ 上會引用
+ *     bpfcc-tools (Bookworm 版本) 不認得的 struct（bpf_wq、bpf_rb_root、
+ *     bpf_refcount 等），編譯會 incomplete-type error。
+ *   - 我們用 TRACEPOINT_PROBE，args 結構由 bcc 從 tracefs 自動合成，
+ *     不需要 kernel 結構定義。
+ *   - 常數（AF_INET、IPPROTO_TCP）以下自行 #define。
+ *   - u8/u16/u32/u64 由 bcc 自動注入。
+ */
 
 #define TCP_SYN_SENT_STATE 2
 #define AF_INET_VALUE 2
