@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Educational IoT honeypot for Raspberry Pi. A deliberately-vulnerable PHP/MariaDB "smart-home" web app runs alongside a Python defense monitor that drives physical hardware (two LEDs and an SG90 servo) to visualise three attack categories. Do not deploy on a public network.
 
-Default admin credential seeded by `web/src/setup_db.php`: `admin` / `sm@rtH0me2024!`. Web app is exposed on host port **9090**.
+Default admin credential seeded by `web/src/setup_db.php`: `admin` / `sm@rtH0me2024!`. Web app is exposed on host port **8080**.
 
 ## Common commands
 
@@ -32,9 +32,8 @@ docker compose down -v && docker compose up -d
 Automated detection tests (run from a host with Python + `requests`, against a running stack):
 
 ```bash
-# NOTE: BASE_URL inside the test files is hardcoded to http://localhost:8080
-# but docker-compose maps the web app to 9090 — adjust BASE_URL or the
-# port mapping before running, otherwise every request 404s.
+# BASE_URL defaults to http://localhost:8080, matching the compose port.
+# Override via env: BASE_URL=http://<pi_ip>:8080 python3 tests/...
 python3 tests/test_led1_path_probe.py --start 1 --batch 100   # /admin probe → green LED
 python3 tests/test_led2_sqli.py                               # SQLi bypass → red LED
 ```

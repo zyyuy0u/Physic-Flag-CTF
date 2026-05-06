@@ -28,7 +28,7 @@ import requests
 # ---------------------------------------------------------------------------
 # 設定
 # ---------------------------------------------------------------------------
-BASE_URL = os.environ.get("BASE_URL", "http://localhost:9090")
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:8080")
 LOGIN_URL = f"{BASE_URL}/admin_login_v2.php"
 DASHBOARD_URL = f"{BASE_URL}/dashboard.php"
 PAYLOAD_FILE = os.path.join(os.path.dirname(__file__), "..", "Generic-SQLi.txt")

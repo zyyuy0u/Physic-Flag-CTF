@@ -8,7 +8,7 @@
 
 set -u
 
-BASE_URL="http://localhost:9090"
+BASE_URL="${BASE_URL:-http://localhost:8080}"
 CONTAINER=$(docker ps --filter "name=defense-system" --format "{{.Names}}" | head -1)
 WEB=$(docker ps --filter "name=web-app" --format "{{.Names}}" | head -1)
 

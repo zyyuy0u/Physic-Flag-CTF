@@ -30,7 +30,7 @@ import requests
 # ---------------------------------------------------------------------------
 # 設定
 # ---------------------------------------------------------------------------
-BASE_URL = os.environ.get("BASE_URL", "http://localhost:9090")
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:8080")
 WORDLIST = os.path.join(os.path.dirname(__file__), "..", "common.txt")
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 CONTAINER = "iot-honeypot-defense-system-1"
