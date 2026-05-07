@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 # Install the mode-switch daemon onto a Raspberry Pi host.
+#
 # Usage:
-#   sudo ./host/mode-switch/install.sh           # install files only, do NOT start
-#   sudo ./host/mode-switch/install.sh --start   # install AND start (with confirmation)
+#   sudo ./host/mode-switch/install.sh           # install files only — NOT enabled, NOT started
+#   sudo ./host/mode-switch/install.sh --enable  # install + enable (will start on next boot)
+#   sudo ./host/mode-switch/install.sh --start   # install + enable + start now (with confirmation)
 set -euo pipefail
 
 INSTALL_DIR=/opt/honeypot/mode-switch
 SERVICE=mode-switch.service
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-START_SERVICE=0
+ENABLE=0
+START=0
 for arg in "$@"; do
     case "$arg" in
-        --start) START_SERVICE=1 ;;
+        --enable) ENABLE=1 ;;
+        --start)  ENABLE=1; START=1 ;;
         -h|--help)
-            sed -n '2,5p' "$0"
+            sed -n '2,7p' "$0"
             exit 0
             ;;
         *) echo "unknown arg: $arg" >&2; exit 2 ;;
@@ -35,42 +39,76 @@ mkdir -p "$INSTALL_DIR"
 install -m 755 "$HERE/mode_switch.py" "$INSTALL_DIR/mode_switch.py"
 install -m 644 "$HERE/README.md"      "$INSTALL_DIR/README.md"
 
-echo "[3/4] installing systemd unit (enabled but not started)"
+echo "[3/4] installing systemd unit (NOT enabled by default)"
 install -m 644 "$HERE/$SERVICE" "/etc/systemd/system/$SERVICE"
 systemctl daemon-reload
-systemctl enable "$SERVICE"
 
-echo "[4/4] start"
-if [[ $START_SERVICE -eq 1 ]]; then
+# Surface upgrade-path surprises: a prior install may have enabled the
+# unit; running this installer with no flags should not silently leave
+# auto-start active without telling the operator.
+if systemctl is-enabled --quiet "$SERVICE" 2>/dev/null; then
+    PREVIOUSLY_ENABLED=1
+else
+    PREVIOUSLY_ENABLED=0
+fi
+
+if [[ $ENABLE -eq 1 ]]; then
     cat <<'WARN'
 
 ================================================================
-  WARNING — about to start mode-switch.service.
-  If the GPIO 27 toggle switch is OPEN or NOT WIRED, the daemon
-  will apply STUDENT mode immediately and DROP all external SSH
-  to this Pi.
+  WARNING — about to ENABLE mode-switch.service.
+  Once enabled, the daemon will start on EVERY boot. If the GPIO 27
+  toggle switch is open or unwired at boot, student mode applies and
+  external SSH to this Pi is dropped.
 
-  Make sure you have local console (keyboard+HDMI) access OR a
-  way to flip the switch closed before continuing.
+  Make sure the toggle switch is wired up before continuing.
 ================================================================
 WARN
-    read -rp 'Type CONTINUE to start the service now: ' ans
+    read -rp 'Type CONTINUE to enable: ' ans
+    if [[ "$ans" == "CONTINUE" ]]; then
+        systemctl enable "$SERVICE"
+    else
+        echo "Aborted enable. Files installed but unit is not enabled."
+        exit 0
+    fi
+fi
+
+echo "[4/4] start"
+if [[ $START -eq 1 ]]; then
+    cat <<'WARN'
+
+================================================================
+  WARNING — about to START mode-switch.service NOW.
+  If the toggle switch is open/unwired, student mode is applied
+  immediately and external SSH to this Pi is dropped within ~50 ms.
+
+  Have local console access ready before continuing.
+================================================================
+WARN
+    read -rp 'Type CONTINUE to start: ' ans
     if [[ "$ans" == "CONTINUE" ]]; then
         systemctl restart "$SERVICE"
         systemctl --no-pager status "$SERVICE" || true
     else
-        echo "Aborted. Run 'sudo systemctl start $SERVICE' when ready."
+        echo "Aborted start. Service is enabled but not running."
     fi
 else
     cat <<EOF
 
-Files installed and unit enabled, but the service was NOT started.
+Files installed. Service was NOT enabled or started by this run.
 
-To start it (this will apply student mode immediately if the switch
-is open/unwired):
-
-  sudo systemctl start $SERVICE
-
-Or re-run with --start to be prompted now.
+  Enable for next boot:  sudo systemctl enable  $SERVICE
+  Start now:             sudo systemctl start   $SERVICE
+  Or re-run installer:   sudo $0 --enable | --start
 EOF
+    if [[ $PREVIOUSLY_ENABLED -eq 1 ]]; then
+        cat <<EOF
+
+================================================================
+  NOTE — $SERVICE was ALREADY enabled before this install.
+  It will still auto-start on the next boot. To disable:
+      sudo systemctl disable $SERVICE
+================================================================
+EOF
+    fi
 fi

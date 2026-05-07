@@ -1,20 +1,47 @@
 # Mode Switch — Student / Teacher
 
 Host-side daemon that watches a two-position toggle switch on **GPIO 27**
-and rebuilds the Pi's `iptables` INPUT chain accordingly:
+and toggles a dedicated `HONEYPOT-INPUT` iptables chain via a single
+jump from `INPUT`:
 
-| Switch position | Mode    | INPUT policy | External SSH | Web container :8080 |
-|-----------------|---------|--------------|--------------|---------------------|
-| Open (default)  | student | `DROP`       | blocked      | reachable           |
-| Closed (to GND) | teacher | `ACCEPT`     | normal       | reachable           |
+| Switch position | Mode    | Effect                               | External SSH | Web container :8080 |
+|-----------------|---------|--------------------------------------|--------------|---------------------|
+| Open (default)  | student | `INPUT` jumps to `HONEYPOT-INPUT`, which terminates with `DROP` | blocked | reachable |
+| Closed (to GND) | teacher | jump removed                         | normal       | reachable           |
 
-Container traffic is unaffected because Docker's `PREROUTING` / `FORWARD`
-/ `DOCKER-USER` chains are never touched — we only own the host's INPUT
-chain. The defense container can still reach `pigpiod` on the host
-because student mode whitelists `8888/tcp` *arriving on a Docker bridge
-interface* (`docker0` and `br-+` wildcard). The rule matches by
-ingress interface rather than source CIDR, so same-LAN hosts on
-`172.16/12` cannot reach pigpiod just by spoofing a docker-looking IP.
+### Why a dedicated chain?
+
+We never flush or re-policy the `INPUT` chain itself, so if the
+operator has their own host firewall rules, the daemon doesn't
+clobber them. In teacher mode the daemon's footprint is **zero
+active rules** — `INPUT` behaves exactly as if the daemon weren't
+installed.
+
+Container traffic is unaffected because Docker's
+`PREROUTING` / `FORWARD` / `DOCKER` / `DOCKER-USER` chains and the
+`nat` table are never touched.
+
+### How pigpiod stays reachable from the defense container
+
+Student mode whitelists `8888/tcp` only when **all** of the following
+match:
+
+- ingress on a Docker bridge interface (`docker0` or `br-+`)
+- source IP equals the defense-system container's exact IP, looked
+  up via the compose label `com.docker.compose.service=defense-system`
+
+The intentionally RCE-able `web-app` container has a *different*
+source IP, so it can no longer reach pigpiod even if compromised.
+The same-LAN spoofing risk (someone on `172.16/12` reaching pigpiod)
+is also eliminated because we filter by ingress interface, not just
+source CIDR.
+
+If the defense container isn't running when student mode is applied,
+the rule is omitted (the daemon logs a `WARNING`) and the servo will
+not actuate. Bring the docker stack up, then `--mode student` again
+or restart the daemon to refresh the rule. **The daemon does not
+auto-refresh on container restart yet** (would require a Docker
+events watcher); plan for it if you tear the stack down often.
 
 ## Wiring
 
@@ -37,19 +64,24 @@ Two-position toggle switch (SPST / SPDT, either works):
 
 ## Install on the Pi
 
+The default install **does not enable or start** the service. This is
+deliberate: starting the daemon with the switch unwired would apply
+student mode and immediately drop your SSH session.
+
 ```bash
 # from the repo root, on the Pi
-sudo ./host/mode-switch/install.sh           # install + enable, do NOT start
-sudo systemctl start mode-switch.service     # start when you're ready
+sudo ./host/mode-switch/install.sh           # install files only
 
-# or, install + start in one go (prompts for confirmation):
+# enable for next boot (prompts for confirmation)
+sudo ./host/mode-switch/install.sh --enable
+
+# enable + start now (prompts for confirmation)
 sudo ./host/mode-switch/install.sh --start
-```
 
-The default install does **not** auto-start the service. This is
-deliberate: if the toggle switch is unwired, starting the daemon
-would immediately apply student mode and drop your SSH session. Wire
-up the switch (or have local console access) before starting.
+# or do it manually any time after install
+sudo systemctl enable mode-switch.service
+sudo systemctl start  mode-switch.service
+```
 
 ## Manual / testing use (no switch wired)
 
@@ -58,24 +90,27 @@ up the switch (or have local console access) before starting.
 sudo /opt/honeypot/mode-switch/mode_switch.py --mode student
 sudo /opt/honeypot/mode-switch/mode_switch.py --mode teacher
 
-# Inspect current INPUT chain + last applied mode
+# Inspect INPUT + HONEYPOT-INPUT chains and last applied mode
 sudo /opt/honeypot/mode-switch/mode_switch.py --show
 ```
 
-`--mode` and `--show` do not need GPIO and run on any host. Useful for
-exercising the rules before the physical switch arrives.
+`--mode` and `--show` do not require GPIO — useful for exercising
+the rules before the physical switch arrives.
+
+The "last applied" state lives at `/run/honeypot-mode`, which is
+tmpfs and clears on reboot — by design. After every boot the GPIO
+state is the source of truth and the daemon re-derives the mode.
 
 ## Recovery if you lock yourself out
 
-If a bad rule somehow locks SSH, recover via:
+If a bad rule somehow blocks SSH, recover via:
 
-1. Flip the switch to teacher (closed) — daemon flushes INPUT and sets
-   policy ACCEPT within 50 ms.
+1. Flip the switch to teacher (closed) — daemon removes its INPUT
+   jump within ~50 ms. SSH is restored as long as the operator's
+   own pre-existing INPUT rules permit it.
 2. Or attach keyboard + monitor to the Pi and run
-   `sudo iptables -F INPUT && sudo iptables -P INPUT ACCEPT`.
-3. Or unplug the Pi and boot — student mode is reapplied on boot, so
-   the rules will be the documented set above (not whatever broken
-   state was in memory).
+   `sudo iptables -D INPUT -j HONEYPOT-INPUT` (repeat until it errors).
+3. Or `sudo systemctl stop mode-switch && sudo iptables -F HONEYPOT-INPUT`.
 
 ## Service management
 
@@ -89,7 +124,7 @@ journalctl -u mode-switch -f
 
 iptables and GPIO are **host resources**. Putting this in a container
 would require `--network host --privileged --cap-add=NET_ADMIN` plus
-mounting `/sys/class/gpio` — at which point you have a "container" that
-is functionally a host-side script with extra steps. Keeping it as a
-plain systemd unit is simpler and easier to reason about for a security
-control.
+mounting `/sys/class/gpio` — at which point you have a "container"
+that is functionally a host-side script with extra steps. Keeping it
+as a plain systemd unit is simpler and easier to reason about for a
+security control.

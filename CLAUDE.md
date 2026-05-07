@@ -32,14 +32,16 @@ docker compose down -v && docker compose up -d
 Host-side mode switch (student / teacher) — see `host/mode-switch/`:
 
 ```bash
-# Install daemon + systemd unit (run once, on the Pi)
+# Install (does NOT enable or start the service — by design)
 sudo ./host/mode-switch/install.sh
+# Enable + start when ready (prompts for confirmation):
+sudo ./host/mode-switch/install.sh --start
 
 # Force a mode without flipping the physical switch (testing)
 sudo /opt/honeypot/mode-switch/mode_switch.py --mode student
 sudo /opt/honeypot/mode-switch/mode_switch.py --mode teacher
 
-# Inspect current INPUT chain + last applied mode
+# Inspect current INPUT + HONEYPOT-INPUT chains + last applied mode
 sudo /opt/honeypot/mode-switch/mode_switch.py --show
 ```
 
@@ -91,29 +93,41 @@ Everything the honeypot "does" lives in two threads launched from `main()`:
 
 ### Host-side mode switch (`host/mode-switch/`)
 
-Independent of the docker stack — a Python systemd daemon that watches a
-two-position toggle switch on **GPIO 27** (pull-up enabled, switch closes
-to GND) and rebuilds the host's `iptables` INPUT chain:
+Independent of the docker stack — a Python systemd daemon that watches
+a two-position toggle switch on **GPIO 27** (pull-up enabled, switch
+closes to GND) and toggles a **dedicated `HONEYPOT-INPUT` chain** via
+a single jump from `INPUT`:
 
-- **student mode** (switch open) — `INPUT` policy `DROP`. Allows only
-  loopback, `ESTABLISHED,RELATED`, ICMP, and `pigpiod:8888/tcp`
-  arriving on a Docker bridge interface (`-i docker0` / `-i br-+`),
-  so the defense container can still drive the servo. External SSH
-  is dropped, and same-LAN hosts on `172.16/12` cannot bypass via
-  source-IP spoofing.
-- **teacher mode** (switch closed to GND) — `INPUT` flushed, policy
-  `ACCEPT`. Normal Pi access.
+- **student mode** (switch open) — `INPUT` jumps to `HONEYPOT-INPUT`
+  which allows only loopback, `ESTABLISHED,RELATED`, ICMP, and
+  `pigpiod:8888/tcp` from the defense-system container's exact source
+  IP arriving on a Docker bridge interface (`-i docker0` / `-i br-+`),
+  then terminates with `DROP`. The intentionally RCE-able web-app
+  container cannot reach pigpiod even with code execution because its
+  source IP differs.
+- **teacher mode** (switch closed to GND) — jump removed from `INPUT`.
+  The daemon's active footprint is zero rules; `INPUT`'s own
+  policy/rules apply unchanged.
 
-Container traffic is unaffected because we only flush the `INPUT` chain
-of the `filter` table — Docker's `nat/PREROUTING`, `filter/FORWARD`,
-`DOCKER`, `DOCKER-USER`, and `DOCKER-ISOLATION-*` chains are never
-touched, so port-forwarded services (web-app:8080) stay reachable in
-both modes. Policy is set **last** in the apply path so a partial
-failure leaves INPUT permissive rather than locked.
+We never flush or re-policy `INPUT` itself, so operators with their
+own host firewall rules keep them in both modes. Docker's
+`nat/PREROUTING`, `filter/FORWARD`, `DOCKER`, `DOCKER-USER`, and
+`DOCKER-ISOLATION-*` chains are also untouched.
 
-`mode_switch.py` exposes a CLI (`--mode student|teacher`, `--show`) for
-testing without the physical switch. Last applied mode is recorded at
-`/run/honeypot-mode`.
+Defense-container IP is resolved at apply time via
+`docker ps --filter label=com.docker.compose.service=defense-system`.
+If the stack isn't up when student mode applies, the pigpiod rule is
+omitted (logged as `WARNING`) and the servo will not actuate — bring
+docker up, then re-apply or restart the daemon. The daemon does NOT
+auto-refresh on container restart; plan a Docker events watcher if
+the stack churns often.
+
+`mode_switch.py` exposes a CLI (`--mode student|teacher`, `--show`)
+for testing without the physical switch. Last applied mode lives at
+`/run/honeypot-mode` (tmpfs, cleared on reboot — GPIO is the boot-time
+source of truth). IPv6 enforcement is **fail-closed**: if the kernel
+has IPv6 enabled (`/proc/net/if_inet6` exists), `ip6tables` errors
+abort the apply rather than silently leaving IPv6 SSH reachable.
 
 ### Web app
 
