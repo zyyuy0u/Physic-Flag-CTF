@@ -29,6 +29,20 @@ docker compose up -d --build web-app
 docker compose down -v && docker compose up -d
 ```
 
+Host-side mode switch (student / teacher) — see `host/mode-switch/`:
+
+```bash
+# Install daemon + systemd unit (run once, on the Pi)
+sudo ./host/mode-switch/install.sh
+
+# Force a mode without flipping the physical switch (testing)
+sudo /opt/honeypot/mode-switch/mode_switch.py --mode student
+sudo /opt/honeypot/mode-switch/mode_switch.py --mode teacher
+
+# Inspect current INPUT chain + last applied mode
+sudo /opt/honeypot/mode-switch/mode_switch.py --show
+```
+
 Automated detection tests (run from a host with Python + `requests`, against a running stack):
 
 ```bash
@@ -73,7 +87,33 @@ Everything the honeypot "does" lives in two threads launched from `main()`:
 
 - **Connect order**: `hardware_setup()` initialises `RPi.GPIO` first, then calls `connect_pigpio()` which tries `PIGPIO_HOST` env var → Docker default-route gateway → `localhost`. If pigpiod is unreachable, the LED threads still run but the motor is dead — look for `[PIGPIO] 所有連線嘗試均失敗` in the logs.
 - **Shutdown invariant** (`shutdown_handler`): on `SIGTERM`/`SIGINT` the monitor must (a) turn LEDs off, (b) drive the servo back to `SERVO_UP=500` and sleep 1s for the physical motion, (c) `set_servo_pulsewidth(..., 0)` to stop PWM (otherwise the SG90 buzzes/heats), then `pi.stop()` and `GPIO.cleanup()`. Don't reorder these steps; the 1s delay is load-bearing.
-- Pin map (BCM): green=22, red=24, servo=18. Pulse widths: standing=500µs, knocked-down=1500µs. These constants and the LED/motor log markers (`[LED1]`, `[LED2]`, `[MOTOR]`) are the contract the test scripts rely on — changing them breaks `tests/`.
+- Pin map (BCM): green=22, red=24, servo=18, mode-switch=27 (input, pull-up). Pulse widths: standing=500µs, knocked-down=1500µs. These constants and the LED/motor log markers (`[LED1]`, `[LED2]`, `[MOTOR]`) are the contract the test scripts rely on — changing them breaks `tests/`.
+
+### Host-side mode switch (`host/mode-switch/`)
+
+Independent of the docker stack — a Python systemd daemon that watches a
+two-position toggle switch on **GPIO 27** (pull-up enabled, switch closes
+to GND) and rebuilds the host's `iptables` INPUT chain:
+
+- **student mode** (switch open) — `INPUT` policy `DROP`. Allows only
+  loopback, `ESTABLISHED,RELATED`, ICMP, and `pigpiod:8888/tcp`
+  arriving on a Docker bridge interface (`-i docker0` / `-i br-+`),
+  so the defense container can still drive the servo. External SSH
+  is dropped, and same-LAN hosts on `172.16/12` cannot bypass via
+  source-IP spoofing.
+- **teacher mode** (switch closed to GND) — `INPUT` flushed, policy
+  `ACCEPT`. Normal Pi access.
+
+Container traffic is unaffected because we only flush the `INPUT` chain
+of the `filter` table — Docker's `nat/PREROUTING`, `filter/FORWARD`,
+`DOCKER`, `DOCKER-USER`, and `DOCKER-ISOLATION-*` chains are never
+touched, so port-forwarded services (web-app:8080) stay reachable in
+both modes. Policy is set **last** in the apply path so a partial
+failure leaves INPUT permissive rather than locked.
+
+`mode_switch.py` exposes a CLI (`--mode student|teacher`, `--show`) for
+testing without the physical switch. Last applied mode is recorded at
+`/run/honeypot-mode`.
 
 ### Web app
 

@@ -1,0 +1,18 @@
+[Unit]
+Description=IoT Honeypot mode switch (student/teacher)
+Documentation=file:///opt/honeypot/mode-switch/README.md
+After=network-online.target
+Wants=network-online.target
+# Deliberately not After=docker.service: we never touch FORWARD/DOCKER
+# chains, so we don't need to wait for Docker. Decoupling also keeps
+# teacher-mode recovery fast even when Docker is hung or failing.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/honeypot/mode-switch/mode_switch.py --daemon
+Restart=on-failure
+RestartSec=5
+# Need root for iptables + GPIO; do not drop privileges here.
+
+[Install]
+WantedBy=multi-user.target
