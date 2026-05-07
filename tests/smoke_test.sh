@@ -3,7 +3,7 @@
 # 用法（在 Pi 上、docker compose up -d 已起來後）：
 #   bash tests/smoke_test.sh
 #
-# 不蒐集統計，純粹檢查 [LED1]、[LED2]、[MOTOR] 三個標記都會在 log 中出現。
+# 不蒐集統計，純粹檢查 [LED1]、[BUZZER]、[MOTOR] 三個標記都會在 log 中出現。
 # 馬達冷卻 5 秒，所以三階段中間有 sleep。
 
 set -u
@@ -42,9 +42,9 @@ curl -s -o /dev/null "$BASE_URL/admin"
 sleep 2
 check "\[LED1\] 命中 /admin"
 
-# -------- Stage 2: LED2 (SQLi 繞過) --------
+# -------- Stage 2: BUZZER (SQLi/auth 繞過) --------
 echo
-echo "====== Stage 2: LED2 (SQLi bypass) ======"
+echo "====== Stage 2: BUZZER (SQLi/auth bypass) ======"
 COOKIE=$(mktemp)
 CSRF=$(curl -s -c "$COOKIE" "$BASE_URL/admin_login_v2.php" \
        | grep -oE 'name="csrf_token"[^>]+value="[^"]+"' \
@@ -59,7 +59,7 @@ else
         --data-urlencode "csrf_token=$CSRF" \
         -L -o /dev/null
     sleep 2
-    check "\[LED2\] 命中 SQLi"
+    check "\[BUZZER\] 命中 SQLi"
 fi
 rm -f "$COOKIE"
 
@@ -78,7 +78,7 @@ new_logs | grep "\[LATENCY\]" || echo "  (未捕捉到 [LATENCY]，可能 Stage 
 
 echo
 echo "====== 完整新增 log（debug 用）======"
-new_logs | grep -E '\[(LED1|LED2|MOTOR|LATENCY|執行緒)' | head -30
+new_logs | grep -E '\[(LED1|BUZZER|MOTOR|LATENCY|執行緒)' | head -30
 
 echo
 if [ "$FAIL_COUNT" -gt 0 ]; then

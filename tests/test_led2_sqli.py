@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LED2 SQL Injection 自動化測試
+BUZZER (SQL Injection / auth bypass) 自動化測試
 ==============================
 測試 defense-system 是否能可靠偵測 SQL Injection 繞過登入。
 
@@ -36,7 +36,7 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 CONTAINER = "iot-honeypot-defense-system-1"
 
 CSRF_PATTERN = re.compile(r'name="csrf_token"\s+value="([^"]+)"')
-LED2_PATTERN = re.compile(r"\[LED2\]")
+BUZZER_PATTERN = re.compile(r"\[BUZZER\]")
 
 # 每條 payload 測試後等待 defense-system 處理的寬限時間（秒）
 DETECTION_GRACE_PERIOD = 3
@@ -50,7 +50,7 @@ REQUEST_TIMEOUT = 15
 # ---------------------------------------------------------------------------
 class DockerLogMonitor:
     """背景執行緒，串流讀取 defense-system 的 docker logs，
-    計算 [LED2] 出現次數。"""
+    計算 [BUZZER] 出現次數。"""
 
     def __init__(self):
         self.count = 0
@@ -88,7 +88,7 @@ class DockerLogMonitor:
             for line in self._proc.stdout:
                 if self._stop_event.is_set():
                     break
-                if LED2_PATTERN.search(line):
+                if BUZZER_PATTERN.search(line):
                     with self._lock:
                         self.count += 1
         except Exception as exc:

@@ -51,10 +51,10 @@ Automated detection tests (run from a host with Python + `requests`, against a r
 # BASE_URL defaults to http://localhost:8080, matching the compose port.
 # Override via env: BASE_URL=http://<pi_ip>:8080 python3 tests/...
 python3 tests/test_led1_path_probe.py --start 1 --batch 100   # /admin probe → green LED
-python3 tests/test_led2_sqli.py                               # SQLi bypass → red LED
+python3 tests/test_led2_sqli.py                               # SQLi bypass → buzzer (3 beeps)
 ```
 
-The tests scrape `docker logs iot-honeypot-defense-system-1` for `[LED1]` / `[LED2]` markers — the container name must match Docker Compose's default (`<project>-<service>-1`), so don't rename the project directory without also updating `CONTAINER` in both test files.
+The tests scrape `docker logs iot-honeypot-defense-system-1` for `[LED1]` / `[BUZZER]` markers — the container name must match Docker Compose's default (`<project>-<service>-1`), so don't rename the project directory without also updating `CONTAINER` in both test files.
 
 There is no lint, type-check, or unit-test suite. The two scripts in `tests/` are end-to-end detection-rate experiments, not unit tests.
 
@@ -72,7 +72,7 @@ Everything the honeypot "does" lives in two threads launched from `main()`:
 
 - **Thread A — `docker_log_monitor`**: streams `docker logs -f web-app` and matches each line against two regexes:
   - `ADMIN_PATTERN` (`(?:GET|HEAD|POST) /admin[\s/?]`) → green LED on (GPIO 22), logged as `[LED1]`. Case-sensitive on purpose — Apache won't serve `/Admin` so adding `IGNORECASE` would only count noise.
-  - `DASHBOARD_PATTERN` (`"GET /dashboard.php..." 200`) → red LED on (GPIO 24), logged as `[LED2]`. The detection assumes unauthenticated access to `dashboard.php` normally returns 302; a 200 means session was forged or auth was bypassed.
+  - `DASHBOARD_PATTERN` (`"GET /dashboard.php..." 200`) → buzzer 3-beep alarm (GPIO 24), logged as `[BUZZER]`. Detection assumes unauthenticated access to `dashboard.php` normally returns 302; a 200 means session was forged or auth was bypassed (any path — SQLi, credential stuffing, session forging, etc., not only SQLi). The alarm is rate-limited by `BUZZER_COOLDOWN_S` so back-to-back hits don't pile up audibly; the `[BUZZER]` log line still fires for every detection so detection-rate stats stay accurate.
 - **Thread B — `bpf_event_consumer`** *(eBPF-based, replaces the old netstat polling)*: loads `bpf_probe.c` via bcc, which hooks `tracepoint:sock:inet_sock_set_state` and emits ringbuf events for outbound `TCP_SYN_SENT` transitions originating from the **web-app cgroup only** (kernel-side filter via `BPF_HASH(cgroup_filter)` populated at startup with web-app's cgroup id resolved from `/sys/fs/cgroup/system.slice/docker-<id>.scope`). A background polling thread re-resolves web-app's cgroup id every 5 s and updates the BPF filter map if it changed — restarting web-app yields a new cgroup id, so without this the probe would silently match nothing after the first `docker compose restart web-app`. (Polling instead of `docker events` because subscribing to events has missed-event windows during reconnect; polling is miss-proof and the 5 s blind window is acceptable since web-app isn't accepting requests during its own restart.) User-space (`bpf_loader.py`) drains events through a `queue.Queue` (filled by the bcc poll callback thread) and applies the IP whitelist (loopback, link-local, and the precise Docker subnets returned by `docker inspect`; the old `172.16.0.0/12` RFC1918 catchall was removed because it masked LAN-side attackers in the same range, and `build_whitelist()` now fail-closes if `docker inspect` errors so the probe never runs with a broken whitelist). Any non-whitelist destination fires the servo (GPIO 18, pulse 500 → 1500), logged as `[MOTOR]`. Subsequent triggers are suppressed for `MOTOR_COOLDOWN = 5s` via `motor_lock` + `motor_triggered` flag. Three latency markers are emitted per detection: `[LATENCY] kernel→user=Xµs`, `user→pigpio_return=Yµs`, `total kernel→pigpio_return=Zµs`. Labels reflect what's actually measured — the time at which `pigpio.set_servo_pulsewidth()` returns to user space, not the time the SG90 finishes its physical rotation (which adds another ~100–300 ms).
 
 #### Why eBPF here
@@ -89,7 +89,7 @@ Everything the honeypot "does" lives in two threads launched from `main()`:
 
 - **Connect order**: `hardware_setup()` initialises `RPi.GPIO` first, then calls `connect_pigpio()` which tries `PIGPIO_HOST` env var → Docker default-route gateway → `localhost`. If pigpiod is unreachable, the LED threads still run but the motor is dead — look for `[PIGPIO] 所有連線嘗試均失敗` in the logs.
 - **Shutdown invariant** (`shutdown_handler`): on `SIGTERM`/`SIGINT` the monitor must (a) turn LEDs off, (b) drive the servo back to `SERVO_UP=500` and sleep 1s for the physical motion, (c) `set_servo_pulsewidth(..., 0)` to stop PWM (otherwise the SG90 buzzes/heats), then `pi.stop()` and `GPIO.cleanup()`. Don't reorder these steps; the 1s delay is load-bearing.
-- Pin map (BCM): green=22, red=24, servo=18, mode-switch=27 (input, pull-up). Pulse widths: standing=500µs, knocked-down=1500µs. These constants and the LED/motor log markers (`[LED1]`, `[LED2]`, `[MOTOR]`) are the contract the test scripts rely on — changing them breaks `tests/`.
+- Pin map (BCM): green LED=22, buzzer=24, servo=18, mode-switch=27 (input, pull-up). GPIO 24 drives an active-buzzer module (HIGH=on, LOW=off); pulse widths: standing=500µs, knocked-down=1500µs. These constants and the log markers (`[LED1]`, `[BUZZER]`, `[MOTOR]`) are the contract the test scripts rely on — changing them breaks `tests/`.
 
 ### Host-side mode switch (`host/mode-switch/`)
 

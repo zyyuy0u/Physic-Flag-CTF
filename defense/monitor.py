@@ -3,8 +3,8 @@
 IoT 蜜罐防禦監控系統 v3.0 (eBPF Reverse Shell 偵測)
 =====================================
 硬體對應：
-   - /admin 探測 -> 綠燈 (GPIO 22)  日誌標記 [LED1]
-   - SQLi 成功   -> 紅燈 (GPIO 24)  日誌標記 [LED2]
+   - /admin 探測 -> 綠燈   (GPIO 22)  日誌標記 [LED1]
+   - SQLi/auth   -> 蜂鳴器 (GPIO 24)  日誌標記 [BUZZER]   (3 嗶，每嗶 100ms)
    - RevShell    -> 標靶馬達 (GPIO 18) 日誌標記 [MOTOR]
 
 重要：宿主機必須以遠端模式啟動 pigpiod：
@@ -35,7 +35,7 @@ except ImportError as e:
     logging.basicConfig(level=logging.ERROR, format="[%(asctime)s] %(levelname)s  %(message)s", force=True)
     logging.getLogger("defense").error(
         "eBPF Reverse Shell 偵測無法啟動 (bcc/bpf_loader 不可用): %s — "
-        "LED1/LED2 仍會運作，但第三階段（馬達）會失效", e,
+        "LED1/BUZZER 仍會運作，但第三階段（馬達）會失效", e,
     )
 
 # 硬體載入與腳位定義
@@ -48,11 +48,19 @@ except (ImportError, RuntimeError):
     logging.warning("硬體函式庫無法使用 — 以模擬模式運行")
 
 PIN_GREEN  = 22   # LED1 路徑探測
-PIN_RED    = 24   # LED2 SQLi 繞過
+PIN_BUZZER = 24   # BUZZER SQLi/auth 繞過 (active buzzer module: HIGH=響, LOW=停)
 PIN_SERVO  = 18   # 標靶馬達
 
 SERVO_UP   = 500  # 標靶立起
 SERVO_DOWN = 1500 # 標靶擊倒
+
+# 蜂鳴器嗶嗶嗶模式：3 響、每響 100ms、響/停交替；總時長 ~600ms。
+# BUZZER_COOLDOWN_S 防止連續事件造成多 beep 重疊或 GPIO 抖動 — 期間
+# 仍會記錄 [BUZZER] 偵測 log（保留偵測率統計），只跳過 actuation。
+BUZZER_BEEP_COUNT = 3
+BUZZER_BEEP_ON_S  = 0.1
+BUZZER_BEEP_OFF_S = 0.1
+BUZZER_COOLDOWN_S = 1.0
 
 WEB_CONTAINER = os.environ.get("WEB_CONTAINER", "web-app")
 
@@ -65,6 +73,8 @@ MOTOR_COOLDOWN = 5
 pi = None
 motor_triggered = False
 motor_lock = threading.Lock()
+buzzer_busy = False        # True while a beep sequence is mid-play / cooldown
+buzzer_lock = threading.Lock()
 _cleanup_done = False  # latched by _cleanup_hardware so atexit/SIGTERM/main-exit don't double-clean
 log = logging.getLogger("defense")
 
@@ -163,7 +173,7 @@ def _cleanup_hardware():
                 return
             try:
                 GPIO.output(PIN_GREEN, GPIO.LOW)
-                GPIO.output(PIN_RED, GPIO.LOW)
+                GPIO.output(PIN_BUZZER, GPIO.LOW)
             except Exception:
                 pass
             if pi and pi.connected:
@@ -200,15 +210,15 @@ signal.signal(signal.SIGINT, shutdown_handler)
 def hardware_setup():
     global pi
     if not GPIO_AVAILABLE:
-        log.info("模擬模式：綠燈(22), 紅燈(24), 馬達(18)")
+        log.info("模擬模式：綠燈(22), 蜂鳴器(24), 馬達(18)")
         return
 
-    # LED 初始化
+    # 輸出腳位初始化
     GPIO.setwarnings(False)
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(PIN_GREEN, GPIO.OUT, initial=GPIO.LOW)
-    GPIO.setup(PIN_RED, GPIO.OUT, initial=GPIO.LOW)
-    log.info("[GPIO] LED 初始化完成（綠燈=22, 紅燈=24）")
+    GPIO.setup(PIN_BUZZER, GPIO.OUT, initial=GPIO.LOW)
+    log.info("[GPIO] 輸出腳位初始化完成（綠燈=22, 蜂鳴器=24）")
 
     # pigpio 連線（多候選位址）
     pi = connect_pigpio()
@@ -240,9 +250,8 @@ def docker_log_monitor():
                         GPIO.output(PIN_GREEN, GPIO.HIGH)
 
                 if DASHBOARD_PATTERN.search(line):
-                    log.warning("[LED2] 命中 SQLi 繞過 -> 點亮紅燈")
-                    if GPIO_AVAILABLE:
-                        GPIO.output(PIN_RED, GPIO.HIGH)
+                    log.warning("[BUZZER] 命中 SQLi/auth 繞過 -> 蜂鳴器警報")
+                    trigger_buzzer()
             proc.wait()
         except Exception as e:
             log.error("[執行緒-A] 錯誤: %s", e)
@@ -263,6 +272,77 @@ def motor_cooldown_reset():
     with motor_lock:
         motor_triggered = False
     log.info("[MOTOR] 馬達冷卻結束，可再次觸發（標靶保持倒下，需重啟系統復位）")
+
+
+def trigger_buzzer():
+    """Spawn a beep sequence in a daemon thread, with cooldown.
+
+    The cooldown gates the *actuation* only — caller logs [BUZZER] for
+    every detection so detection-rate stats stay accurate (same pattern
+    as the motor cooldown). If a beep is in progress or the cooldown
+    hasn't elapsed, this is a no-op. If thread creation fails (e.g.
+    interpreter shutting down), buzzer_busy is unwound so the next
+    legit trigger isn't permanently stuck.
+    """
+    global buzzer_busy
+    with buzzer_lock:
+        if buzzer_busy:
+            return
+        buzzer_busy = True
+    try:
+        threading.Thread(target=_buzzer_beep_worker, daemon=True).start()
+    except RuntimeError as exc:
+        with buzzer_lock:
+            buzzer_busy = False
+        log.warning("[BUZZER] beep thread start failed: %s", exc)
+
+
+def _gpio_buzz_safe(level):
+    """Drive PIN_BUZZER unless cleanup has run. Returns True if the
+    write happened, False if we should stop the beep sequence.
+
+    Holds motor_lock to make the (_cleanup_done check + GPIO.output)
+    pair atomic with respect to _cleanup_hardware, which acquires
+    motor_lock for its entire teardown. This eliminates the
+    check-then-act race where the worker could pass the flag check,
+    pause, and then write to a torn-down GPIO.
+    """
+    with motor_lock:
+        if _cleanup_done:
+            return False
+        try:
+            GPIO.output(PIN_BUZZER, level)
+            return True
+        except Exception:
+            return False
+
+
+def _buzzer_beep_worker():
+    """Play the configured beep pattern, then hold the busy flag for the
+    cooldown so back-to-back detections don't restart the buzzer.
+
+    Each GPIO write is gated by _cleanup_done: a SIGTERM mid-beep
+    races with _cleanup_hardware setting PIN_BUZZER LOW + GPIO.cleanup,
+    so we exit early rather than re-asserting HIGH on a torn-down GPIO.
+    """
+    global buzzer_busy
+    try:
+        if GPIO_AVAILABLE:
+            for _ in range(BUZZER_BEEP_COUNT):
+                if not _gpio_buzz_safe(GPIO.HIGH):
+                    return
+                time.sleep(BUZZER_BEEP_ON_S)
+                if not _gpio_buzz_safe(GPIO.LOW):
+                    return
+                time.sleep(BUZZER_BEEP_OFF_S)
+        beep_total = BUZZER_BEEP_COUNT * (BUZZER_BEEP_ON_S + BUZZER_BEEP_OFF_S)
+        remaining = BUZZER_COOLDOWN_S - beep_total
+        if remaining > 0:
+            time.sleep(remaining)
+    finally:
+        with buzzer_lock:
+            buzzer_busy = False
+
 
 def _normalize_addr(ip_str):
     """把 IPv4-mapped IPv6（::ffff:1.2.3.4）轉回 IPv4，方便用 IPv4 白名單比對"""
@@ -417,7 +497,7 @@ def main():
     log.info("白名單: %s", [str(n) for n in whitelist])
 
     # 3. 啟動監控執行緒
-    #    - Thread A (LED1/LED2) 永遠啟動，與 BPF 解耦
+    #    - Thread A (LED1/BUZZER) 永遠啟動，與 BPF 解耦
     #    - Thread B (eBPF Reverse Shell) 只在 bcc 可用時啟動；失敗不會拖垮 Thread A
     t1 = threading.Thread(target=docker_log_monitor, daemon=True)
     t1.start()
@@ -428,7 +508,7 @@ def main():
         t2.start()
         log.info("所有監控執行緒已啟動，eBPF Reverse Shell 偵測就緒")
     else:
-        log.warning("BPF 不可用 — 僅啟動 LED1/LED2 偵測，馬達將不會被觸發")
+        log.warning("BPF 不可用 — 僅啟動 LED1/BUZZER 偵測，馬達將不會被觸發")
 
     # 主迴圈：只要 Thread A 活著就維持運行；Thread B 死掉只記 warning
     bpf_dead_logged = False

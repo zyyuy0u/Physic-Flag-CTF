@@ -66,7 +66,7 @@ title 執行緒 A — Docker Log 即時監控機制
 participant "web-app\n(Apache)" as Web
 participant "defense-system\n（執行緒 A）" as ThreadA
 participant "LED1" as LED1
-participant "LED2" as LED2
+participant "Buzzer" as BUZZER
 
 autonumber
 
@@ -90,9 +90,9 @@ group 迴圈 [即時逐行讀取 Docker Container Log]
   ThreadA -> ThreadA: 以 Regex 比對\n偵測規則 B
 
   group 條件 [偵測規則 B 命中]
-    ThreadA -> LED2: 輸出 GPIO HIGH 訊號
-    activate LED2
-    note over LED2: LED2 常亮（不自動熄滅）
+    ThreadA -> BUZZER: 觸發嗶嗶嗶 3 聲\n（GPIO HIGH/LOW 100ms × 3）
+    activate BUZZER
+    note over BUZZER: 蜂鳴器響 ~600ms 後自動停\n冷卻 1s 內後續觸發只記 log
   end
 
 end

@@ -37,7 +37,7 @@ fork
 
     if (Regex 比對\n符合偵測規則 B？) then (命中)
       :輸出 GPIO 訊號
-      點亮 LED2;
+      蜂鳴器嗶 3 聲;
     else (未命中)
     endif
   endwhile
