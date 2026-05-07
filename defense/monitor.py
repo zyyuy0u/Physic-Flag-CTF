@@ -15,6 +15,7 @@ IoT 蜜罐防禦監控系統 v3.0 (eBPF Reverse Shell 偵測)
    /sys/fs/cgroup, /lib/modules, /usr/src 掛載。
 """
 
+import atexit
 import os
 import sys
 import re
@@ -64,6 +65,7 @@ MOTOR_COOLDOWN = 5
 pi = None
 motor_triggered = False
 motor_lock = threading.Lock()
+_cleanup_done = False  # latched by _cleanup_hardware so atexit/SIGTERM/main-exit don't double-clean
 log = logging.getLogger("defense")
 
 # 偵測規則
@@ -120,22 +122,46 @@ def connect_pigpio():
     log.error("=" * 60)
     return None
 
-def shutdown_handler(signum, frame):
-    """安全清理：必須拿 motor_lock 與 Thread B 互斥，否則 set_servo_pulsewidth
-    可能跟 bpf_event_consumer 同時操作 pi，造成 race。motor_triggered = True
-    並 latch 住，阻止 Thread B 在清理過程中再插指令。"""
-    global motor_triggered
-    log.info("接收到訊號，執行安全清理...")
-    with motor_lock:
-        motor_triggered = True   # latch — 阻止 Thread B 觸發新的 servo 指令
-        if GPIO_AVAILABLE:
-            # 先關燈
+def _cleanup_hardware():
+    """Hardware shutdown that survives concurrent signals and Thread B.
+
+    Two concurrency hazards are handled here:
+
+      1. Operator hits Ctrl-C twice (or SIGTERM + SIGINT) while we're
+         mid-PWM. The 1-second sleep is load-bearing — interrupting it
+         leaves the SG90 buzzing at SERVO_UP forever. We install SIG_IGN
+         for SIGTERM/SIGINT first thing on entry so a second signal
+         cannot abort us; original handlers are restored in finally.
+
+      2. Thread B (bpf_event_consumer) is mid-event and holds motor_lock
+         while running pi.set_servo_pulsewidth(). We acquire motor_lock
+         for the entire cleanup (not just the flag latch), so Thread B
+         either finishes its servo command first or waits — never
+         interleaves with our SERVO_UP/sleep/0/stop sequence.
+
+    Re-entry from atexit after a signal-triggered cleanup is harmless:
+    _cleanup_done is checked before the work, so the second pass returns
+    immediately.
+    """
+    global motor_triggered, _cleanup_done
+    if _cleanup_done:
+        return
+
+    old_term = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    old_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        with motor_lock:
+            if _cleanup_done:
+                return
+            _cleanup_done = True
+            motor_triggered = True
+            if not GPIO_AVAILABLE:
+                return
             try:
                 GPIO.output(PIN_GREEN, GPIO.LOW)
                 GPIO.output(PIN_RED, GPIO.LOW)
             except Exception:
                 pass
-            # 再關馬達
             if pi and pi.connected:
                 try:
                     pi.set_servo_pulsewidth(PIN_SERVO, SERVO_UP)
@@ -144,13 +170,26 @@ def shutdown_handler(signum, frame):
                     pi.stop()
                 except Exception:
                     pass
-            # 最後清理 GPIO
             try:
                 GPIO.cleanup()
             except Exception:
                 pass
+    finally:
+        signal.signal(signal.SIGTERM, old_term)
+        signal.signal(signal.SIGINT, old_int)
+
+
+def shutdown_handler(signum, frame):
+    log.info("接收到訊號 %s，執行安全清理...", signum)
+    _cleanup_hardware()
     sys.exit(0)
 
+
+# atexit covers the non-signal paths: main-loop exit, sys.exit() from
+# any code path, and uncaught exceptions in the main thread. Combined
+# with the signal handlers and _cleanup_done latch, hardware always
+# gets cleaned up exactly once.
+atexit.register(_cleanup_hardware)
 signal.signal(signal.SIGTERM, shutdown_handler)
 signal.signal(signal.SIGINT, shutdown_handler)
 
@@ -251,12 +290,11 @@ def bpf_event_consumer(whitelist):
             if any(ip in net for net in whitelist):
                 continue
 
-            # 判定為 Reverse Shell — 帶冷卻防重複
-            with motor_lock:
-                if motor_triggered:
-                    continue
-                motor_triggered = True
-
+            # Cooldown gates the servo command, not the log line:
+            # detection-rate stats need every event recorded, while
+            # the SG90 only needs to be commanded once per knock-down
+            # (it stays at SERVO_DOWN until manual reset). See
+            # motor_cooldown_reset() for the full rationale.
             latency_us = (event.recv_ts_ns - event.ts_ns) // 1000
             log.warning("[MOTOR] 命中 Reverse Shell (%s -> %s:%d, "
                         "comm=%s pid=%d) -> 擊倒標靶",
@@ -264,14 +302,33 @@ def bpf_event_consumer(whitelist):
                         event.comm, event.pid)
             log.info("[LATENCY] kernel→user=%dµs", latency_us)
 
-            if pi and pi.connected:
-                t0 = time.monotonic_ns()
-                pi.set_servo_pulsewidth(PIN_SERVO, SERVO_DOWN)
-                t1 = time.monotonic_ns()
+            # Hold motor_lock across the cooldown check AND the pigpio
+            # call so _cleanup_hardware (which also takes motor_lock)
+            # cannot interleave its SERVO_UP/sleep/stop sequence with
+            # this thread's SERVO_DOWN command. t1 is when the pigpio
+            # call returns — physical SG90 motion takes ~100-300ms more
+            # which is intentionally NOT measured.
+            fired = False
+            t1: int | None = None
+            pigpio_ok = False
+            with motor_lock:
+                if not motor_triggered:
+                    motor_triggered = True
+                    fired = True
+                    if pi and pi.connected:
+                        pi.set_servo_pulsewidth(PIN_SERVO, SERVO_DOWN)
+                        t1 = time.monotonic_ns()
+                        pigpio_ok = True
+
+            if not fired:
+                log.info("[MOTOR] 冷卻中 — 跳過 servo 動作（事件已記錄）")
+                continue
+
+            if pigpio_ok:
                 log.info("[MOTOR] 馬達指令已發送 (pulse=%d)", SERVO_DOWN)
-                log.info("[LATENCY] user→motor=%dµs",
+                log.info("[LATENCY] user→pigpio_return=%dµs",
                          (t1 - event.recv_ts_ns) // 1000)
-                log.info("[LATENCY] total kernel→motor=%dµs",
+                log.info("[LATENCY] total kernel→pigpio_return=%dµs",
                          (t1 - event.ts_ns) // 1000)
             else:
                 log.error("[MOTOR] pigpio 未連線，無法控制馬達！請確認 pigpiod 狀態")
