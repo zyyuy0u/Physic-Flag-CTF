@@ -1,0 +1,52 @@
+@startuml docker_network_diagram
+title Docker Bridge Network 服務隔離架構圖
+
+skinparam rectangle {
+  RoundCorner 10
+}
+
+rectangle "Raspberry Pi" as rpi {
+
+  rectangle "honeypot-net\n(Bridge Network)" as net {
+
+    rectangle "db\n(MariaDB)" as db {
+      label "Port 3306\n（未映射至主機）" as db_port
+    }
+
+    rectangle "web-app\n(PHP + Apache)" as web {
+      label "Port 80" as web_port
+    }
+
+    rectangle "defense-system\n(Python)" as defense {
+      label "無對外端口" as def_port
+    }
+
+    db <-[hidden]-> web
+    web <-[hidden]-> defense
+  }
+
+  rectangle "主機網路\nPort 8080" as host_net
+
+  web_port -down-> host_net : 8080:80\n（唯一對外映射）
+}
+
+rectangle "使用者主機\n（攻擊端）" as attacker
+
+host_net -down-> attacker : 實體網路線\n（點對點連接）
+
+note right of net
+  三個容器位於同一個
+  Docker Bridge 網路中，
+  透過 Docker 內部 DNS
+  以服務名稱互相存取
+end note
+
+note right of db
+  外部無法存取
+end note
+
+note right of defense
+  外部無法存取
+end note
+
+@enduml

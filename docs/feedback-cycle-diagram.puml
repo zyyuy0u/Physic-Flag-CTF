@@ -1,0 +1,28 @@
+@startuml feedback_cycle
+title 階段式即時回饋學習循環圖
+
+skinparam rectangle {
+  RoundCorner 25
+  FontSize 14
+}
+
+skinparam arrow {
+  Color #334155
+  Thickness 2
+}
+
+rectangle "學習者\n進行滲透測試攻擊" as A #E0F2FE
+rectangle "防禦監控系統\n即時偵測攻擊階段" as B #FEF3C7
+rectangle "驅動 LED\n階段式燈號回饋" as C #FEE2E2
+rectangle "學習者\n觀察設備物理反應" as D #E0F2FE
+rectangle "確認攻擊成效\n提升成就感與學習動機" as E #DCFCE7
+
+A -right-> B
+B -right-> C
+C -down-> D
+D -left-> E
+E -left-> A
+
+center footer 本循環於每一攻擊階段重複執行，直至所有階段完成
+
+@enduml

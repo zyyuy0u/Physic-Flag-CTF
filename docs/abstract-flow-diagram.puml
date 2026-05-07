@@ -1,0 +1,29 @@
+@startuml abstract_flow
+title 研究摘要架構圖
+
+skinparam rectangle {
+  RoundCorner 20
+  FontSize 13
+}
+
+skinparam arrow {
+  Thickness 2
+}
+
+rectangle "**背景**\n資安實作訓練需求日益增長\nCTF 為目前主流學習平台" as A #E0F2FE
+
+rectangle "**缺口**\n多數 CTF 僅於最終解題\n才給予回饋，缺乏即時性\n與階段性，初學者易因\n挫敗而降低學習動機" as B #FEF3C7
+
+rectangle "**本研究做了什麼**\n設計基於樹莓派的\n階段式回饋實體靶場系統\n以三段式 LED 指示燈\n於攻擊過程中提供\n即時物理回饋" as C #DCFCE7
+
+rectangle "**發現了什麼**\n系統能即時偵測各階段\n攻擊行為並驅動對應燈號\n學習者可透過物理反應\n確認攻擊成效" as D #F3E8FF
+
+rectangle "**貢獻**\n提出具備階段式回饋、\n即時性與快速部署的\n資安滲透訓練創新模型\n為資安教育提供\n多元實作學習選擇" as E #FEE2E2
+
+A -down-> B
+B -down-> C
+C -down-> D
+D -down-> E
+E -up-> A : 未來研究：\n擴充攻擊場景\n快速部署關卡
+
+@enduml
