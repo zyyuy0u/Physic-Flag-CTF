@@ -72,6 +72,15 @@ class BpfReverseShellProbe:
         self._bpf: BPF | None = None
         self._queue: queue.Queue[ParsedEvent] = queue.Queue()
         self._stopped = threading.Event()
+        # Updated in start() and re-checked every REFRESH_INTERVAL_S by
+        # _refresh_loop(). web-app restart yields a new cgroup id, so
+        # without periodic reconciliation the kernel filter would
+        # silently match nothing after the first restart.
+        self._current_cgroup_id: int | None = None
+        self._cgroup_lock = threading.Lock()
+        self._refresh_thread: threading.Thread | None = None
+
+    REFRESH_INTERVAL_S: float = 5.0
 
     def start(self, max_retries: int = 10, retry_interval_s: float = 1.0) -> None:
         """Resolve container cgroup id, load BPF, populate map.
@@ -112,6 +121,7 @@ class BpfReverseShellProbe:
         bpf["events"].open_ring_buffer(self._on_event)
 
         self._bpf = bpf
+        self._current_cgroup_id = cgroup_id
 
         self.log.info(
             "Started BPF reverse-shell probe: container=%s id=%s "
@@ -121,6 +131,19 @@ class BpfReverseShellProbe:
             cgroup_path,
             cgroup_id,
         )
+
+        # Reconcile the cgroup filter every REFRESH_INTERVAL_S so a
+        # web-app restart (which changes its cgroup id) doesn't leave
+        # the kernel filter stuck on a stale id. Polling is simpler
+        # and miss-proof compared to subscribing to docker events,
+        # and the 5s blind window is acceptable here — web-app is
+        # not yet accepting connections during its own startup.
+        self._refresh_thread = threading.Thread(
+            target=self._refresh_loop,
+            name="bpf-cgroup-refresh",
+            daemon=True,
+        )
+        self._refresh_thread.start()
 
     def iter_events(self, poll_timeout_ms: int = 500) -> Iterator[ParsedEvent]:
         """Blocking generator yielding ParsedEvent dataclasses."""
@@ -139,6 +162,66 @@ class BpfReverseShellProbe:
 
     def stop(self) -> None:
         self._stopped.set()
+        t = self._refresh_thread
+        if t is not None and t.is_alive():
+            # Cover the worst case: thread is mid-`docker inspect`
+            # (10 s timeout) when stop is called. Adding 2 s of slack
+            # so join doesn't return while the thread is still in the
+            # subprocess wait.
+            t.join(timeout=12.0)
+
+    def _refresh_loop(self) -> None:
+        """Poll web-app's cgroup id every REFRESH_INTERVAL_S.
+
+        Uses Event.wait() so stop() can interrupt the sleep
+        immediately rather than waiting for the next tick. Each tick
+        calls _refresh_cgroup() which is cheap on no-change (compares
+        old vs new id and returns early). If web-app is mid-restart
+        and docker inspect / cgroup resolution fails, the helper logs
+        a warning and the loop retries on the next tick.
+
+        The bare-except guard is deliberate: if any unexpected error
+        escapes _refresh_cgroup(), losing the refresh thread would
+        silently degrade the probe to "stuck on the original cgroup
+        id, blind to all subsequent web-app restarts". Logging and
+        retrying is strictly safer.
+        """
+        while not self._stopped.wait(self.REFRESH_INTERVAL_S):
+            try:
+                self._refresh_cgroup()
+            except Exception as exc:
+                self.log.warning("cgroup refresh tick failed: %s", exc)
+
+    def _refresh_cgroup(self) -> None:
+        """Re-resolve web-app cgroup and update the BPF filter map atomically."""
+        try:
+            container_id = self._docker_container_id()
+            cgroup_path, new_id = self._resolve_cgroup(container_id)
+        except RuntimeError as exc:
+            self.log.warning("cgroup refresh failed: %s", exc)
+            return
+
+        with self._cgroup_lock:
+            old_id = self._current_cgroup_id
+            if old_id == new_id:
+                return  # same container instance — no-op
+            assert self._bpf is not None
+            try:
+                self._bpf["cgroup_filter"][ct.c_uint64(new_id)] = ct.c_uint8(1)
+                if old_id is not None:
+                    try:
+                        del self._bpf["cgroup_filter"][ct.c_uint64(old_id)]
+                    except KeyError:
+                        pass
+                self._current_cgroup_id = new_id
+            except Exception as exc:
+                self.log.error("Failed to update BPF cgroup_filter map: %s", exc)
+                return
+
+        self.log.info(
+            "Refreshed cgroup_id: %s -> %d (path=%s) for container=%s",
+            old_id, new_id, cgroup_path, self.web_container_name,
+        )
 
     def _docker_container_id(self) -> str:
         try:
@@ -182,9 +265,16 @@ class BpfReverseShellProbe:
             f"/sys/fs/cgroup/docker/{container_id}",
         ]
 
+        # Stat each path directly instead of exists()-then-stat() to
+        # avoid a TOCTOU race: during a web-app restart the cgroup
+        # directory can disappear between the two calls and a
+        # FileNotFoundError escaping here would kill the refresh
+        # thread silently.
         for path in paths:
-            if os.path.exists(path):
+            try:
                 return path, os.stat(path).st_ino
+            except FileNotFoundError:
+                continue
 
         raise RuntimeError(
             "could not resolve Docker cgroup path for container "

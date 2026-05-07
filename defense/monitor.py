@@ -69,7 +69,11 @@ _cleanup_done = False  # latched by _cleanup_hardware so atexit/SIGTERM/main-exi
 log = logging.getLogger("defense")
 
 # 偵測規則
-ADMIN_PATTERN = re.compile(r'GET /admin[\s/?]')
+# LED1 涵蓋常見的 path enum 手法：GET 是預設、HEAD 是部分掃描器（更快、不
+# 抓 body）、POST 較少見但路徑掃描或誤打 admin form 也會出現。case 維持
+# sensitive — Apache 預設 case-sensitive，/Admin 不會比對到實際的檔案，
+# 加 IGNORECASE 反而會把噪音算進偵測率。
+ADMIN_PATTERN = re.compile(r'(?:GET|HEAD|POST) /admin[\s/?]')
 DASHBOARD_PATTERN = re.compile(r'"GET /dashboard\.php\b[^"]*"\s+200\b')
 
 # 硬體控制輔助
@@ -346,28 +350,55 @@ def bpf_event_consumer(whitelist):
 
 # 主程式
 def build_whitelist():
-    """建立白名單：Docker 內部網段 + 宿主機網段，排除在 Reverse Shell 偵測之外"""
+    """建立白名單：loopback + link-local + web-app 所在的 Docker 子網。
+
+    刻意 fail-closed：拿不到 docker 子網就 raise，讓 defense 容器以
+    非零狀態結束。compose 的 ``restart: unless-stopped`` 會讓它在
+    ``docker compose ps`` 中顯示為 ``Restarting``，operator 看得到、
+    避免在白名單不完整的狀態下默默運作（會誤把合法的 docker bridge
+    流量當成 reverse shell）。也刻意 *不* 加 172.16/12 這種 RFC1918
+    catchall — 那會把真實 LAN 上的攻擊者（例如 listener 在
+    172.20.x.x）漏掉。
+    """
     networks = [
         ipaddress.IPv4Network('127.0.0.0/8'),
         ipaddress.IPv4Network('169.254.0.0/16'),
-        ipaddress.IPv6Network('::1/128'),       # IPv6 loopback
-        ipaddress.IPv6Network('fe80::/10'),     # IPv6 link-local
+        ipaddress.IPv6Network('::1/128'),
+        ipaddress.IPv6Network('fe80::/10'),
     ]
     try:
         result = subprocess.run(
             ["docker", "inspect", WEB_CONTAINER, "--format", "{{json .NetworkSettings.Networks}}"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, check=True,
         )
-        for name, cfg in json.loads(result.stdout.strip()).items():
-            gateway = cfg.get("Gateway", "")
-            prefix = cfg.get("IPPrefixLen", 16)
-            if gateway:
-                network_cls = ipaddress.IPv4Network if ipaddress.ip_address(gateway).version == 4 else ipaddress.IPv6Network
-                networks.append(network_cls(f"{gateway}/{prefix}", strict=False))
-                log.info("[白名單] Docker 網段: %s/%s (from %s)", gateway, prefix, name)
-    except Exception as e:
-        log.warning("[白名單] docker inspect 失敗，無法動態取得 Docker 網段: %s", e)
-    networks.append(ipaddress.IPv4Network('172.16.0.0/12'))  # defensive catchall
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"docker inspect 失敗，無法取得 {WEB_CONTAINER} 的網段資訊；"
+            "為避免在白名單不完整下誤判，defense 拒絕啟動。"
+            f"原因：{exc}"
+        ) from exc
+
+    nets_json = json.loads(result.stdout.strip())
+    added = 0
+    for name, cfg in nets_json.items():
+        gateway = cfg.get("Gateway", "")
+        prefix = cfg.get("IPPrefixLen", 16)
+        if not gateway:
+            continue
+        network_cls = (
+            ipaddress.IPv4Network
+            if ipaddress.ip_address(gateway).version == 4
+            else ipaddress.IPv6Network
+        )
+        networks.append(network_cls(f"{gateway}/{prefix}", strict=False))
+        log.info("[白名單] Docker 網段: %s/%s (from %s)", gateway, prefix, name)
+        added += 1
+
+    if added == 0:
+        raise RuntimeError(
+            f"docker inspect 回傳的 {WEB_CONTAINER} 網段為空；"
+            "若繼續運行偵測會把所有對外流量視為 reverse shell。"
+        )
     return networks
 
 def main():
