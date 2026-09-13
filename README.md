@@ -75,28 +75,30 @@
 ## 快速部署
 
 ```bash
-# 1. 啟動宿主機 pigpio 守護行程（必須加 -n 允許 Docker 容器連線）
-sudo pigpiod -n 0.0.0.0
+# 1. Clone 專案（在樹莓派上）
+git clone https://github.com/zyyuy0u/Physic-Flag-CTF.git
+cd Physic-Flag-CTF
 
-# 1a. (建議) 設定開機自動啟動，就不用每次手動執行
-sudo systemctl edit pigpiod
-#    貼入以下內容：
-#    [Service]
-#    ExecStart=
-#    ExecStart=/usr/bin/pigpiod -n 0.0.0.0
-sudo systemctl daemon-reload
-sudo systemctl enable --now pigpiod
-
-# 2. Clone 專案
-git clone https://github.com/<your-username>/iot-honeypot.git
-cd iot-honeypot
-
-# 3. 啟動所有服務 (系統會自動初始化資料庫)
+# 2. 啟動所有服務（馬達連線在背景重試，不會阻擋 LED/蜂鳴器監控）
 docker compose up -d
 
-# 4. 確認服務狀態
+# 3. 確認服務狀態
 docker compose ps
 ```
+
+馬達需要宿主機的 pigpiod 允許防禦容器連入。**`-n` 是用戶端 IP 允許清單，
+不是監聽位址；舊版說明中的 `-n 0.0.0.0` 有誤。**
+若尚未啟動 pigpiod，可在 Docker 已啟動後執行：
+
+```bash
+DEFENSE_ID=$(docker compose ps -q defense-system)
+DEFENSE_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DEFENSE_ID")
+sudo pigpiod -n localhost -n "$DEFENSE_IP"
+```
+
+若既有 pigpiod 已由 systemd 管理，應更新該服務的設定並重新啟動，勿另開第二個 daemon。
+容器 IP 改變後須同步更新 pigpiod 的允許清單與學生模式防火牆；完整步驟見
+[GPIO 與 pigpiod 排錯](docs/gpio-troubleshooting.md)。
 
 ## 改用同一個 Wi-Fi 存取
 

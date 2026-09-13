@@ -78,7 +78,7 @@ bash tests/smoke_test.sh
 | `docker inspect` 失敗 | 確認 Docker 與 web-app 已啟動；使用上面的 `sudo ... status` 取得 Docker 查詢權限 |
 | HTTP 失敗 | 檢查 `docker compose ps`、`docker compose logs --tail 50 web-app`；容器剛啟動時稍候再試 |
 | 網站正常，SSH 失敗 | 學生模式會阻擋新的 SSH；切到教師模式後確認 SSH 服務與原有防火牆 |
-| 有偵測日誌但馬達不動 | 檢查 pigpiod、GPIO 供電與防禦容器 IP 的防火牆規則 |
+| 有偵測日誌但 LED／馬達不動 | 依 [GPIO 與 pigpiod 排錯](../../docs/gpio-troubleshooting.md) 檢查 GPIO 讀回、daemon 與容器 IP 規則 |
 | 顯示 Docker／Wi-Fi 子網重疊 | 依下列方式換一個不重疊的子網 |
 
 子網衝突時，可以調整展示路由器的 LAN，或在 `docker-compose.yml` 的 `honeypot-net`

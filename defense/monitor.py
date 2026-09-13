@@ -7,8 +7,8 @@ IoT 蜜罐防禦監控系統 v3.0 (eBPF Reverse Shell 偵測)
    - SQLi/auth   -> 蜂鳴器 (GPIO 24)  日誌標記 [BUZZER]   (3 嗶，每嗶 100ms)
    - RevShell    -> 標靶馬達 (GPIO 18) 日誌標記 [MOTOR]
 
-重要：宿主機必須以遠端模式啟動 pigpiod：
-   sudo pigpiod -n 0.0.0.0
+重要：馬達需要宿主機的 pigpiod 允許 defense-system 容器 IP 連入：
+   -n 指定允許的用戶端 IP，不是監聽位址；設定步驟見 README.md。
    額外要求：kernel ≥ 5.8（ringbuf 支援），bcc 套件
    (apt install bpfcc-tools python3-bpfcc)。
    容器需要 pid: host 與 /sys/kernel/debug, /sys/fs/bpf,
@@ -26,6 +26,8 @@ import threading
 import logging
 import ipaddress
 import signal
+import socket
+from datetime import datetime, timezone
 
 try:
     from bpf_loader import BpfReverseShellProbe, ParsedEvent
@@ -41,11 +43,17 @@ except ImportError as e:
 # 硬體載入與腳位定義
 try:
     import RPi.GPIO as GPIO
-    import pigpio
     GPIO_AVAILABLE = True
-except (ImportError, RuntimeError):
+except (ImportError, RuntimeError) as e:
     GPIO_AVAILABLE = False
-    logging.warning("硬體函式庫無法使用 — 以模擬模式運行")
+    logging.warning("RPi.GPIO 無法使用 — LED/蜂鳴器以模擬模式運行: %s", e)
+
+try:
+    import pigpio
+    PIGPIO_AVAILABLE = True
+except ImportError as e:
+    PIGPIO_AVAILABLE = False
+    logging.warning("pigpio 無法載入 — 馬達停用，LED/蜂鳴器仍可運作: %s", e)
 
 PIN_GREEN  = 22   # LED1 路徑探測
 PIN_BUZZER = 24   # BUZZER SQLi/auth 繞過 (active buzzer module: HIGH=響, LOW=停)
@@ -73,9 +81,11 @@ MOTOR_COOLDOWN = 5
 pi = None
 motor_triggered = False
 motor_lock = threading.Lock()
+gpio_lock = threading.Lock()  # LED / buzzer never wait for a motor socket operation
 buzzer_busy = False        # True while a beep sequence is mid-play / cooldown
 buzzer_lock = threading.Lock()
 _cleanup_done = False  # latched by _cleanup_hardware so atexit/SIGTERM/main-exit don't double-clean
+shutdown_event = threading.Event()
 log = logging.getLogger("defense")
 
 # 偵測規則
@@ -96,6 +106,16 @@ def get_host_gateway_ip():
                 return line.split()[2]
     except Exception:
         pass
+    # The defense image need not contain iproute2. Linux exposes the IPv4
+    # default route here too; its gateway is a little-endian hex address.
+    try:
+        with open("/proc/net/route", encoding="ascii") as routes:
+            for row in routes:
+                fields = row.split()
+                if len(fields) >= 4 and fields[1] == "00000000" and int(fields[3], 16) & 2:
+                    return str(ipaddress.IPv4Address(bytes.fromhex(fields[2])[::-1]))
+    except (OSError, ValueError):
+        pass
     return None
 
 def connect_pigpio():
@@ -106,6 +126,8 @@ def connect_pigpio():
       2. Docker bridge gateway IP（ip route 取得）
       3. localhost（萬一 monitor 直接跑在宿主機上）
     """
+    if not PIGPIO_AVAILABLE:
+        return None
     candidates = []
 
     if PIGPIO_HOST:
@@ -119,9 +141,19 @@ def connect_pigpio():
         candidates.append("localhost")
 
     for host in candidates:
+        if shutdown_event.is_set():
+            return None
         log.info("[PIGPIO] 嘗試連線到 pigpiod @ %s:8888 ...", host)
+        p = None
         try:
-            p = pigpio.pi(host)
+            # Skip unavailable / DROP-filtered hosts quickly. pigpio's own
+            # constructor has unbounded socket operations, so it still runs
+            # only in the dedicated motor worker, never the detection path.
+            with socket.create_connection((host, 8888), timeout=2):
+                pass
+            if shutdown_event.is_set():
+                return None
+            p = pigpio.pi(host, 8888, show_errors=False)
             if p.connected:
                 log.info("[PIGPIO] 成功連線到 pigpiod @ %s", host)
                 return p
@@ -129,11 +161,10 @@ def connect_pigpio():
                 log.warning("[PIGPIO] 連線失敗: %s (pigpiod 可能未啟動或未允許遠端連線)", host)
         except Exception as e:
             log.warning("[PIGPIO] 連線例外: %s -> %s", host, e)
+        if p is not None:
+            p.stop()
 
-    log.error("=" * 60)
-    log.error("[PIGPIO] 所有連線嘗試均失敗！馬達將無法控制！")
-    log.error("[PIGPIO] 請確認宿主機已執行: sudo pigpiod -n 0.0.0.0")
-    log.error("=" * 60)
+    log.warning("[PIGPIO] 本輪連線失敗；請檢查 pigpiod 的 -n 允許清單與學生模式防火牆。")
     return None
 
 def _cleanup_hardware():
@@ -160,6 +191,7 @@ def _cleanup_hardware():
     global motor_triggered, _cleanup_done
     if _cleanup_done:
         return
+    shutdown_event.set()
 
     old_term = signal.signal(signal.SIGTERM, signal.SIG_IGN)
     old_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -169,13 +201,13 @@ def _cleanup_hardware():
                 return
             _cleanup_done = True
             motor_triggered = True
-            if not GPIO_AVAILABLE:
-                return
-            try:
-                GPIO.output(PIN_GREEN, GPIO.LOW)
-                GPIO.output(PIN_BUZZER, GPIO.LOW)
-            except Exception:
-                pass
+            if GPIO_AVAILABLE:
+                with gpio_lock:
+                    try:
+                        GPIO.output(PIN_GREEN, GPIO.LOW)
+                        GPIO.output(PIN_BUZZER, GPIO.LOW)
+                    except Exception:
+                        pass
             if pi and pi.connected:
                 try:
                     pi.set_servo_pulsewidth(PIN_SERVO, SERVO_UP)
@@ -184,10 +216,12 @@ def _cleanup_hardware():
                     pi.stop()
                 except Exception:
                     pass
-            try:
-                GPIO.cleanup()
-            except Exception:
-                pass
+            if GPIO_AVAILABLE:
+                with gpio_lock:
+                    try:
+                        GPIO.cleanup()
+                    except Exception:
+                        pass
     finally:
         signal.signal(signal.SIGTERM, old_term)
         signal.signal(signal.SIGINT, old_int)
@@ -208,9 +242,9 @@ signal.signal(signal.SIGTERM, shutdown_handler)
 signal.signal(signal.SIGINT, shutdown_handler)
 
 def hardware_setup():
-    global pi
+    """Initialise direct GPIO without waiting for the motor daemon."""
     if not GPIO_AVAILABLE:
-        log.info("模擬模式：綠燈(22), 蜂鳴器(24), 馬達(18)")
+        log.warning("[GPIO] 模擬模式：不會實際驅動綠燈(22)、蜂鳴器(24)")
         return
 
     # 輸出腳位初始化
@@ -220,23 +254,66 @@ def hardware_setup():
     GPIO.setup(PIN_BUZZER, GPIO.OUT, initial=GPIO.LOW)
     log.info("[GPIO] 輸出腳位初始化完成（綠燈=22, 蜂鳴器=24）")
 
-    # pigpio 連線（多候選位址）
-    pi = connect_pigpio()
 
-    if pi and pi.connected:
-        pi.set_servo_pulsewidth(PIN_SERVO, SERVO_UP)
-        time.sleep(0.5)
-        log.info("[MOTOR] 硬體初始化完成：標靶已立起 (pulse=%d)", SERVO_UP)
-    else:
-        log.error("[MOTOR] 馬達初始化失敗 — pigpio 未連線")
+def motor_setup_worker():
+    """Connect and initialise the servo independently; retry initial failures.
+
+    Never hold motor_lock during connection attempts. A connection arriving
+    after shutdown must be closed without sending any new servo pulse.
+    """
+    global pi
+    if not PIGPIO_AVAILABLE:
+        log.error("[PIGPIO] 套件不可用；LED/蜂鳴器監控不受影響")
+        return
+    while not shutdown_event.is_set():
+        candidate = None
+        try:
+            candidate = connect_pigpio()
+            if candidate is not None:
+                with motor_lock:
+                    if not _cleanup_done and not shutdown_event.is_set():
+                        candidate.set_servo_pulsewidth(PIN_SERVO, SERVO_UP)
+                        time.sleep(0.5)
+                        pi = candidate
+                        log.info("[MOTOR] 硬體初始化完成：標靶已立起 (pulse=%d)", SERVO_UP)
+                        return
+        except Exception:
+            log.exception("[PIGPIO] 馬達初始化失敗；LED/蜂鳴器監控持續運作")
+        finally:
+            if candidate is not None and candidate is not pi:
+                candidate.stop()
+        if shutdown_event.wait(5):
+            return
+        log.info("[PIGPIO] 重試馬達連線（LED/蜂鳴器監控持續運作）")
+
+
+def trigger_led():
+    # Keep one [LED1] marker per detection for the detection-rate scripts.
+    log.warning("[LED1] 命中 /admin 探測 -> 要求綠燈 BCM22=HIGH")
+    with gpio_lock:
+        if _cleanup_done or shutdown_event.is_set():
+            return
+        if not GPIO_AVAILABLE:
+            log.warning("[GPIO] LED1 為模擬模式，未送出實體 GPIO 指令")
+            return
+        try:
+            GPIO.output(PIN_GREEN, GPIO.HIGH)
+            level = GPIO.input(PIN_GREEN)
+            log.info("[GPIO] LED1 已寫入 HIGH：BCM22（實體第15腳），讀回電位=%s", level)
+        except Exception:
+            log.exception("[GPIO] LED1 輸出／讀回失敗：BCM22（實體第15腳）")
 
 # 監控執行緒
-def docker_log_monitor():
+def docker_log_monitor(started_at=None):
     log.info("[執行緒-A] Log 監控啟動 (目標：%s)", WEB_CONTAINER)
-    while True:
+    # Include requests since this monitor started, even if they arrived just
+    # before Docker attached the log stream. Do not replay prior sessions.
+    first_subscription = True
+    while not shutdown_event.is_set():
         try:
+            history = ["--since", started_at] if first_subscription and started_at else ["--tail", "0"]
             proc = subprocess.Popen(
-                ["docker", "logs", "-f", "--tail", "0", WEB_CONTAINER],
+                ["docker", "logs", "-f", *history, WEB_CONTAINER],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             )
             for line in proc.stdout:
@@ -245,17 +322,16 @@ def docker_log_monitor():
                     continue
 
                 if ADMIN_PATTERN.search(line):
-                    log.warning("[LED1] 命中 /admin 探測 -> 點亮綠燈")
-                    if GPIO_AVAILABLE:
-                        GPIO.output(PIN_GREEN, GPIO.HIGH)
+                    trigger_led()
 
                 if DASHBOARD_PATTERN.search(line):
                     log.warning("[BUZZER] 命中 SQLi/auth 繞過 -> 蜂鳴器警報")
                     trigger_buzzer()
             proc.wait()
+            first_subscription = False
         except Exception as e:
             log.error("[執行緒-A] 錯誤: %s", e)
-        time.sleep(2)
+        shutdown_event.wait(2)
 
 def motor_cooldown_reset():
     """冷卻結束後重置 motor_triggered 旗標。
@@ -301,14 +377,13 @@ def _gpio_buzz_safe(level):
     """Drive PIN_BUZZER unless cleanup has run. Returns True if the
     write happened, False if we should stop the beep sequence.
 
-    Holds motor_lock to make the (_cleanup_done check + GPIO.output)
-    pair atomic with respect to _cleanup_hardware, which acquires
-    motor_lock for its entire teardown. This eliminates the
+    Holds gpio_lock to make the (_cleanup_done check + GPIO.output)
+    pair atomic with respect to GPIO teardown. This eliminates the
     check-then-act race where the worker could pass the flag check,
     pause, and then write to a torn-down GPIO.
     """
-    with motor_lock:
-        if _cleanup_done:
+    with gpio_lock:
+        if _cleanup_done or shutdown_event.is_set():
             return False
         try:
             GPIO.output(PIN_BUZZER, level)
@@ -481,7 +556,25 @@ def build_whitelist():
         )
     return networks
 
+def start_workers(whitelist, started_at):
+    """Start detection without waiting for a possibly blocked pigpio client."""
+    t1 = threading.Thread(target=docker_log_monitor, args=(started_at,), daemon=True)
+    t1.start()
+
+    t2 = None
+    if BPF_AVAILABLE:
+        t2 = threading.Thread(target=bpf_event_consumer, args=(whitelist,), daemon=True)
+        t2.start()
+    else:
+        log.warning("BPF 不可用 — 僅啟動 LED1/BUZZER 偵測，馬達攻擊觸發停用")
+
+    motor_thread = threading.Thread(target=motor_setup_worker, name="motor-setup", daemon=True)
+    motor_thread.start()
+    return t1, t2, motor_thread
+
+
 def main():
+    started_at = datetime.now(timezone.utc).isoformat()
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s  %(message)s", force=True)
     log.info("=" * 60)
     log.info("  IoT 蜜罐防禦監控系統 v3.0")
@@ -489,26 +582,16 @@ def main():
     log.info("  WEB_CONTAINER=%s", WEB_CONTAINER)
     log.info("=" * 60)
 
-    # 1. 硬體初始化
+    # 1. 先初始化 LED / 蜂鳴器，pigpio 在獨立執行緒連線。
     hardware_setup()
 
     # 2. 建立白名單
     whitelist = build_whitelist()
     log.info("白名單: %s", [str(n) for n in whitelist])
 
-    # 3. 啟動監控執行緒
-    #    - Thread A (LED1/BUZZER) 永遠啟動，與 BPF 解耦
-    #    - Thread B (eBPF Reverse Shell) 只在 bcc 可用時啟動；失敗不會拖垮 Thread A
-    t1 = threading.Thread(target=docker_log_monitor, daemon=True)
-    t1.start()
-
-    t2 = None
-    if BPF_AVAILABLE:
-        t2 = threading.Thread(target=bpf_event_consumer, args=(whitelist,), daemon=True)
-        t2.start()
-        log.info("所有監控執行緒已啟動，eBPF Reverse Shell 偵測就緒")
-    else:
-        log.warning("BPF 不可用 — 僅啟動 LED1/BUZZER 偵測，馬達將不會被觸發")
+    # 3. 偵測不等待馬達連線；馬達失聯只影響馬達作動。
+    t1, t2, _motor_thread = start_workers(whitelist, started_at)
+    log.info("監控執行緒已啟動；馬達連線在背景進行")
 
     # 主迴圈：只要 Thread A 活著就維持運行；Thread B 死掉只記 warning
     bpf_dead_logged = False
