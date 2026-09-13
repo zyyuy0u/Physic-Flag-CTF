@@ -21,6 +21,21 @@ Container traffic is unaffected because Docker's
 `PREROUTING` / `FORWARD` / `DOCKER` / `DOCKER-USER` chains and the
 `nat` table are never touched.
 
+### Wi-Fi and DHCP
+
+Student mode also permits DHCP replies on physical interfaces discovered
+from `/sys/class/net/*/device`: IPv4 UDP 67 -> 68 and IPv6 UDP 547 -> 546.
+This covers both Wi-Fi and Ethernet, including predictable interface names,
+without opening DHCP from Docker bridges or opening SSH / pigpiod to the LAN.
+Interfaces are discovered each time a mode is applied; re-apply after plugging
+in a new network adapter. mDNS is not explicitly opened; use the Pi's Wi-Fi
+IPv4 for website access. See [Wi-Fi setup and verification](../network/README.md).
+
+To upgrade an already-installed daemon, put the physical switch in teacher
+mode, run `sudo bash host/mode-switch/install.sh` from the project root, then
+`sudo systemctl restart mode-switch.service`. Updating the repo alone does
+not update the running copy under `/opt/honeypot/mode-switch`.
+
 ### How pigpiod stays reachable from the defense container
 
 Student mode whitelists `8888/tcp` only when **all** of the following

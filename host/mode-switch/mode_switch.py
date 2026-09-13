@@ -10,7 +10,8 @@ operators with their own host firewall keep their rules in both modes.
 
   student mode (switch open, GPIO held high by internal pull-up)
     HONEYPOT-INPUT terminates with DROP. Allows only loopback,
-    ESTABLISHED/RELATED, ICMP, and pigpiod (8888/tcp) from the
+    ESTABLISHED/RELATED, ICMP, DHCP replies on physical interfaces,
+    and pigpiod (8888/tcp) from the
     defense-system container's exact source IP arriving on a Docker
     bridge interface (docker0 / br-+). External SSH is dropped, the
     web-app container cannot reach pigpiod even with RCE.
@@ -48,6 +49,7 @@ STATE_FILE = Path("/run/honeypot-mode")
 # iptables. threading.Lock alone is process-local.
 LOCK_FILE = Path("/run/honeypot-mode.lock")
 IPTABLES_LOCK_WAIT = "5"
+NET_INTERFACES = Path("/sys/class/net")
 
 LOG = logging.getLogger("mode-switch")
 APPLY_LOCK = threading.Lock()
@@ -177,11 +179,29 @@ def _ensure_jump(family: str) -> None:
         _iptables(family, "-I", "INPUT", "1", "-j", HP_CHAIN)
 
 
+def _physical_interfaces() -> list[str]:
+    """Include Wi-Fi / Ethernet (also predictable names), not Docker bridges.
+
+    Interfaces exist in sysfs even before association / DHCP completes.
+    Enumerate at apply time so student mode also works when booting offline.
+    """
+    return sorted(p.name for p in NET_INTERFACES.iterdir() if (p / "device").exists())
+
+
 def _student_rules(family: str) -> list[list[str]]:
     rules: list[list[str]] = [
         ["-A", HP_CHAIN, "-i", "lo", "-j", "ACCEPT"],
         ["-A", HP_CHAIN, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
     ]
+    # Broadcast DHCP replies need not match an established UDP flow.
+    # Permit only server -> client ports on physical network interfaces;
+    # keep NEW SSH, GPIO access from the LAN, and container traffic blocked.
+    server_port, client_port = ("67", "68") if family == "iptables" else ("547", "546")
+    for interface in _physical_interfaces():
+        rules.append([
+            "-A", HP_CHAIN, "-i", interface, "-p", "udp",
+            "--sport", server_port, "--dport", client_port, "-j", "ACCEPT",
+        ])
     if family == "iptables":
         rules.append(["-A", HP_CHAIN, "-p", "icmp", "-j", "ACCEPT"])
         defense_ip = _defense_container_ip()

@@ -32,7 +32,9 @@ rectangle "Raspberry Pi" as rpi {
 
 rectangle "使用者主機\n（攻擊端）" as attacker
 
-host_net -down-> attacker : 實體網路線\n（點對點連接）
+rectangle "展示 Wi-Fi 基地台\n（允許實驗設備互通）" as ap
+host_net -down- ap : Pi 的 Wi-Fi IPv4:8080
+ap -down- attacker : Wi-Fi\n（亦支援多台電腦／手機共用靶場）
 
 note right of net
   三個容器位於同一個

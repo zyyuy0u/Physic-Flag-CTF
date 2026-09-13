@@ -22,7 +22,8 @@ services:
     container_name: web-app
     restart: unless-stopped
     ports:
-      - "8080:80"
+      # 電腦透過 Pi 的 Wi-Fi 或 Ethernet IPv4 存取；不依賴 Docker daemon 的預設綁定位址。
+      - "0.0.0.0:8080:80"
     volumes:
       - ./web/src:/var/www/html
     environment:

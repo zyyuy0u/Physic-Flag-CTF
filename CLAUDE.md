@@ -45,7 +45,20 @@ sudo /opt/honeypot/mode-switch/mode_switch.py --mode teacher
 sudo /opt/honeypot/mode-switch/mode_switch.py --show
 ```
 
-Automated detection tests (run from a host with Python + `requests`, against a running stack):
+Wi-Fi setup (run on the Pi; see `host/network/README.md`):
+
+```bash
+sudo python3 host/network/wifi.py connect --ssid 'Demo Wi-Fi'
+docker compose up -d
+sudo python3 host/network/wifi.py status
+```
+
+The helper uses NetworkManager's interactive password prompt. Status checks
+the Wi-Fi IPv4, actual Docker port bindings, subnet overlap, and local HTTP.
+It cannot check AP/client isolation from the Pi itself. Compose explicitly
+publishes `0.0.0.0:8080:80` for Wi-Fi and Ethernet IPv4 access.
+
+Automated detection tests (run on the Pi with Python + `requests`, against a running stack; Docker logs are read locally):
 
 ```bash
 # BASE_URL defaults to http://localhost:8080, matching the compose port.
@@ -56,7 +69,12 @@ python3 tests/test_led2_sqli.py                               # SQLi bypass → 
 
 The tests scrape `docker logs iot-honeypot-defense-system-1` for `[LED1]` / `[BUZZER]` markers — the container name must match Docker Compose's default (`<project>-<service>-1`), so don't rename the project directory without also updating `CONTAINER` in both test files.
 
-There is no lint, type-check, or unit-test suite. The two scripts in `tests/` are end-to-end detection-rate experiments, not unit tests.
+Wi-Fi CLI and firewall regression tests run without Pi hardware:
+`python3 -m unittest discover -s tests -p 'test_wifi*.py' -v`.
+Firewall tests evaluate traffic against generated rules; live kernel and GPIO
+validation still requires the Pi. The LED/SQLi scripts are end-to-end
+detection-rate experiments, not unit tests. `tests/smoke_test.sh` accepts
+`REVERSE_TARGET_IP` for an offline LAN TCP probe; no listener is required.
 
 ## Architecture
 
@@ -99,7 +117,8 @@ closes to GND) and toggles a **dedicated `HONEYPOT-INPUT` chain** via
 a single jump from `INPUT`:
 
 - **student mode** (switch open) — `INPUT` jumps to `HONEYPOT-INPUT`
-  which allows only loopback, `ESTABLISHED,RELATED`, ICMP, and
+  which allows only loopback, `ESTABLISHED,RELATED`, ICMP,
+  DHCP replies on physical interfaces (UDP 67 -> 68 / 547 -> 546), and
   `pigpiod:8888/tcp` from the defense-system container's exact source
   IP arriving on a Docker bridge interface (`-i docker0` / `-i br-+`),
   then terminates with `DROP`. The intentionally RCE-able web-app

@@ -2,6 +2,8 @@
 # 端到端煙霧測試：一次驗證三階段偵測都活著
 # 用法（在 Pi 上、docker compose up -d 已起來後）：
 #   bash tests/smoke_test.sh
+#   BASE_URL=http://<Pi的Wi-Fi-IP>:8080 REVERSE_TARGET_IP=<電腦的Wi-Fi-IP> bash tests/smoke_test.sh
+# REVERSE_TARGET_IP 指定 LAN 內的測試設備，該設備不用啟動 listener。
 #
 # 不蒐集統計，純粹檢查 [LED1]、[BUZZER]、[MOTOR] 三個標記都會在 log 中出現。
 # 馬達冷卻 5 秒，所以三階段中間有 sleep。
@@ -9,6 +11,8 @@
 set -u
 
 BASE_URL="${BASE_URL:-http://localhost:8080}"
+REVERSE_TARGET_IP="${REVERSE_TARGET_IP:-8.8.8.8}"
+REVERSE_TARGET_PORT="${REVERSE_TARGET_PORT:-12345}"
 CONTAINER=$(docker ps --filter "name=defense-system" --format "{{.Names}}" | head -1)
 WEB=$(docker ps --filter "name=web-app" --format "{{.Names}}" | head -1)
 
@@ -53,7 +57,7 @@ if [ -z "$CSRF" ]; then
     echo "  [FAIL] 無法取得 CSRF token，可能登入頁結構變了"
     FAIL_COUNT=$((FAIL_COUNT + 1))
 else
-    curl -s -b "$COOKIE" -c "$COOKIE" -X POST "$BASE_URL/admin_login_v2.php" \
+    curl -s -b "$COOKIE" -c "$COOKIE" "$BASE_URL/admin_login_v2.php" \
         --data-urlencode "username=' OR 1=1 -- " \
         --data-urlencode "password=x" \
         --data-urlencode "csrf_token=$CSRF" \
@@ -66,8 +70,23 @@ rm -f "$COOKIE"
 # -------- Stage 3: MOTOR (Reverse Shell SYN_SENT) --------
 echo
 echo "====== Stage 3: MOTOR (reverse shell SYN_SENT) ======"
-echo "從 web-app 內對 8.8.8.8:12345 發 SYN（不需 listener，eBPF 在 SYN_SENT 即觸發）"
-docker exec "$WEB" bash -c 'timeout 1 bash -c "</dev/tcp/8.8.8.8/12345" 2>/dev/null || true'
+echo "從 web-app 內對 $REVERSE_TARGET_IP:$REVERSE_TARGET_PORT 發 SYN（不需 listener，eBPF 在 SYN_SENT 即觸發）"
+if ! docker exec "$WEB" python3 -c '
+import ipaddress
+import socket
+import sys
+
+address = ipaddress.IPv4Address(sys.argv[1])
+port = int(sys.argv[2])
+if not 1 <= port <= 65535:
+    raise ValueError("port must be between 1 and 65535")
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.settimeout(1)
+    sock.connect_ex((str(address), port))
+' "$REVERSE_TARGET_IP" "$REVERSE_TARGET_PORT"; then
+    echo "  [FAIL] 無法送出 TCP 連線測試，請檢查目標 IPv4、埠與 web-app 狀態"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
 sleep 2
 check "\[MOTOR\] 命中 Reverse Shell"
 

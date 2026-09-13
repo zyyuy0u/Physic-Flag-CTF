@@ -9,6 +9,7 @@
 ```
                          攻擊者
                            │
+                  Wi-Fi / Ethernet
                       Port 8080
                            │
 ┌──────────────────────────┼──────────────────────────┐
@@ -59,8 +60,8 @@
 ### 2. SQL Injection 繞過偵測 (Apache Logs)
 監控 `dashboard.php` 是否回傳 HTTP 200。正常情況下未登入存取會被重導（302），若回傳 200 則判定為驗證繞過。
 
-### 3. Reverse Shell 即時偵測 (Netstat Snapshot)
-在容器內持續監控連線狀態，過濾掉正常 HTTP (80) 與 Docker 內部網段，偵測任何異常的外連行為。
+### 3. Reverse Shell 即時偵測 (eBPF)
+在核心監控 `web-app` 容器的 TCP `SYN_SENT` 事件，排除 loopback、link-local 與實際 Docker 子網後，偵測非白名單的外連嘗試。此機制不綁定有線或無線網卡。
 
 ## 環境需求
 
@@ -97,6 +98,25 @@ docker compose up -d
 docker compose ps
 ```
 
+## 改用同一個 Wi-Fi 存取
+
+網站明確發布在 Pi 的所有 IPv4 介面 `0.0.0.0:8080`，可供同一區網的電腦／手機存取。
+先將實體開關切到教師模式，透過原有網路線或本機螢幕，在 **Pi 的專案目錄**執行：
+
+```bash
+sudo python3 host/network/wifi.py connect --ssid '你的 Wi-Fi 名稱'
+docker compose up -d
+sudo python3 host/network/wifi.py status
+```
+
+Wi-Fi 密碼由 NetworkManager 互動詢問；若已連上 Wi-Fi 可跳過第一行。
+`status` 會列出 `http://<Pi 的 Wi-Fi IP>:8080`，並檢查 IPv4、實際發布埠、Docker 網段衝突與本機 HTTP。
+電腦／手機連上相同 Wi-Fi 後開啟該網址，確認成功再拔掉直連網路線重試。
+
+Wi-Fi 須允許裝置彼此互通，AP／Client Isolation 或訪客隔離可能阻擋連線。
+學生模式仍可瀏覽網站，但阻擋新的 SSH；本次補上 DHCP 回覆規則，已安裝模式切換服務者須更新其 `/opt` 副本並重啟服務。
+完整的升級、驗證與排錯步驟見 [Wi-Fi 使用說明](host/network/README.md)。
+
 ## 技術棧
 
 | 元件 | 技術 |
@@ -125,5 +145,5 @@ GND     (Pin 6)   ───────────── SG90 接地線 (棕)
 
 - **PWM 穩定性**：本專案使用 `pigpio` 提供硬體級 PWM，徹底解決 RPi.GPIO 控制馬達時常見的抖動問題。
 - **優雅降落**：程式具備 `SIGTERM` 捕捉機制，執行 `docker compose down` 時標靶會自動復位，確保硬體壽命。
-- **點對點環境**：本系統支援完全離線運行，只要攻擊者與 Pi 位處同一區域網即可偵測。
+- **區網存取**：支援有線直連或同一個 Wi-Fi；已部署的靶場核心功能可離線運行，實驗設備間須能互通。
 - 預設管理員帳號：`admin` / `sm@rtH0me2024!`
