@@ -60,7 +60,7 @@ PIN_BUZZER = 24   # BUZZER SQLi/auth 繞過 (active buzzer module: HIGH=響, LOW
 PIN_SERVO  = 18   # 標靶馬達
 
 SERVO_UP   = 500  # 標靶立起
-SERVO_DOWN = 1500 # 標靶擊倒
+SERVO_DOWN = 1250 # 標靶擊倒
 
 # 蜂鳴器嗶嗶嗶模式：3 響、每響 100ms、響/停交替；總時長 ~600ms。
 # BUZZER_COOLDOWN_S 防止連續事件造成多 beep 重疊或 GPIO 抖動 — 期間
