@@ -260,6 +260,39 @@ def set_mode(mode: str) -> None:
             LOG.info("[MODE] active: %s", mode)
 
 
+RECONCILE_INTERVAL_S = 20.0
+
+
+def _reconcile_loop(get_mode) -> None:
+    """Periodic backstop: re-apply the active mode on a fixed interval,
+    independent of _docker_events_watcher.
+
+    A pure event subscription has a window it cannot see: mode-switch.service
+    deliberately does not wait for docker.service (see mode-switch.service's
+    comment — teacher-mode recovery must stay fast even if Docker is hung),
+    so on a real boot this daemon typically starts, resolves "defense-system
+    not found" and skips the pigpiod rule, *then* Docker brings the
+    container up — and if that "start" event fires before the watcher
+    below has (re)connected, it's gone; nothing will ever prompt a
+    re-apply. Observed live: after a reboot the container was "Up 5
+    minutes" and the pigpiod rule was still missing. Same rationale as
+    BpfReverseShellProbe's cgroup refresh in defense/bpf_loader.py
+    ("polling is miss-proof compared to subscribing to docker events") —
+    applied here as a backstop rather than a replacement, since the event
+    watcher still gives near-instant re-apply for the common case
+    (rebuilding defense-system while the daemon is already up). set_mode()
+    atomically rebuilds the chain from scratch, so a redundant re-apply
+    every tick is cheap and never opens a gap.
+    """
+    while True:
+        time.sleep(RECONCILE_INTERVAL_S)
+        try:
+            set_mode(get_mode())
+        except subprocess.CalledProcessError as exc:
+            LOG.error("[RECONCILE] re-apply failed: rc=%d stderr=%s",
+                      exc.returncode, exc.stderr)
+
+
 def _docker_events_watcher(get_mode) -> None:
     """Re-apply the active mode whenever defense-system (re)starts.
 
@@ -271,6 +304,9 @@ def _docker_events_watcher(get_mode) -> None:
     stale until someone thinks to re-run --mode student by hand, which
     is exactly the failure this is meant to catch. Only meaningful
     inside --daemon; a one-shot --mode invocation exits immediately.
+
+    This alone still has a missed-event window at boot — see
+    _reconcile_loop(), which runs alongside it as a periodic backstop.
     """
     filters = ["--filter", f"label={DEFENSE_LABEL}", "--filter", "event=start"]
     if DEFENSE_PROJECT:
@@ -335,6 +371,10 @@ def daemon_loop() -> None:
     threading.Thread(
         target=_docker_events_watcher, args=(current_mode,),
         name="docker-events-watcher", daemon=True,
+    ).start()
+    threading.Thread(
+        target=_reconcile_loop, args=(current_mode,),
+        name="mode-reconcile", daemon=True,
     ).start()
 
     LOG.info("[DAEMON] watching GPIO %d (pull_up=True)", SWITCH_GPIO)
