@@ -36,6 +36,30 @@ mode, run `sudo bash host/mode-switch/install.sh` from the project root, then
 `sudo systemctl restart mode-switch.service`. Updating the repo alone does
 not update the running copy under `/opt/honeypot/mode-switch`.
 
+### Rules don't survive a reboot without the daemon enabled
+
+A stock Raspberry Pi OS image has no `iptables-persistent` /
+`netfilter-persistent`. `HONEYPOT-INPUT` and its `INPUT` jump live in
+kernel memory only — a reboot wipes them, and `INPUT` falls back to its
+own policy (commonly `ACCEPT`, i.e. **no restriction at all**, not a
+fail-closed state) until a mode is reapplied by hand. Running
+`sudo ./host/mode-switch/install.sh --start` closes this: the unit is
+left `enabled`, so it re-derives the mode from GPIO 27 and reapplies it
+on every boot automatically, on top of the GPIO-change and `docker
+events` triggers covered above.
+
+Before you `--start` this on a box you only reach remotely, check *how*
+you reach it: student mode drops every *new inbound* connection except
+the pigpiod rule above, so plain SSH into port 22 from outside gets cut
+off the moment it's next attempted (an already-open SSH session keeps
+working — it matches `ESTABLISHED,RELATED`, which is always allowed). A
+tunnel your side originates *outbound* — Raspberry Pi Connect's
+`rpi-connectd`, a reverse SSH tunnel, a VPN client dialing out — is
+unaffected either way, since the return traffic on a flow the Pi itself
+opened is also `ESTABLISHED,RELATED`. If inbound SSH is your only way
+in, verify GPIO 27 is wired to teacher mode (or that you have local
+console access) before enabling the daemon on boot.
+
 ### How pigpiod stays reachable from the defense container
 
 Student mode whitelists `8888/tcp` only when **all** of the following

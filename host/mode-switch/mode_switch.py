@@ -279,7 +279,7 @@ def _docker_events_watcher(get_mode) -> None:
     while True:
         try:
             proc = subprocess.Popen(
-                ["docker", "events", *filters, "--format", "{{.ID}}"],
+                ["docker", "events", *filters, "--format", "{{.Actor.ID}}"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
             )
         except FileNotFoundError:

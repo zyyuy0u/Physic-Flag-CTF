@@ -160,6 +160,22 @@ source of truth). IPv6 enforcement is **fail-closed**: if the kernel
 has IPv6 enabled (`/proc/net/if_inet6` exists), `ip6tables` errors
 abort the apply rather than silently leaving IPv6 SSH reachable.
 
+**iptables rules do not survive a reboot on a stock Pi OS image** — there
+is no `iptables-persistent`/`netfilter-persistent` here, so `HONEYPOT-INPUT`
+and its `INPUT` jump live in kernel memory only. Without the systemd
+daemon installed and enabled, a reboot silently drops back to whatever
+`INPUT`'s own policy is (commonly `ACCEPT`, i.e. *no* restriction at all —
+not a fail-closed state) until someone reapplies a mode by hand. Installing
+with `sudo ./host/mode-switch/install.sh --start` closes this gap: the
+unit is `enabled`, so it re-derives the mode from GPIO 27 and reapplies it
+on every boot, in addition to the GPIO-change and `docker events` triggers
+covered above. Before enabling on a box you only reach remotely, confirm
+your remote-access path survives student mode — SSH accepted here (`22/tcp`)
+is a *new inbound* connection and gets dropped in student mode; a tunnel
+your side originates outbound (e.g. Raspberry Pi Connect's `rpi-connectd`)
+is unaffected since return traffic on an outbound-initiated flow matches
+`ESTABLISHED,RELATED`, which student mode always allows.
+
 ### Web app
 
 `web/src/` is intentionally vulnerable — `admin_login_v2.php` carries the SQLi sink, `network.php` carries the command-injection sink. `setup_db.php` seeds tables and the admin user. Treat the deliberate vulnerabilities as fixtures, not bugs to fix.
