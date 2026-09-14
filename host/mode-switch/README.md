@@ -54,9 +54,19 @@ source CIDR.
 If the defense container isn't running when student mode is applied,
 the rule is omitted (the daemon logs a `WARNING`) and the servo will
 not actuate. Bring the docker stack up, then `--mode student` again
-or restart the daemon to refresh the rule. **The daemon does not
-auto-refresh on container restart yet** (would require a Docker
-events watcher); plan for it if you tear the stack down often.
+or restart the daemon to refresh the rule.
+
+`docker-compose.yml` pins `defense-system` to a fixed IP
+(`172.28.55.10`), so a rebuilt/recreated container keeps the same
+address the rule already allows — no manual re-apply needed for the
+common case. When running as `--daemon` (the systemd service), a
+background thread also watches `docker events` for that container's
+start events and re-applies the active mode automatically on every
+one, covering cases the IP pin doesn't (network recreated with a
+different subnet, compose project renamed). **A one-shot `--mode
+student` invocation has no watcher** — only `--daemon` does — so if
+you rebuild the stack while the daemon isn't running, re-apply by
+hand afterward.
 
 ## Wiring
 

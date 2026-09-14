@@ -31,6 +31,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 SWITCH_GPIO = 27
@@ -259,6 +260,52 @@ def set_mode(mode: str) -> None:
             LOG.info("[MODE] active: %s", mode)
 
 
+def _docker_events_watcher(get_mode) -> None:
+    """Re-apply the active mode whenever defense-system (re)starts.
+
+    docker-compose.yml pins defense-system's IP, so the student-mode
+    pigpiod rule normally survives a rebuild without this. This is
+    defense-in-depth for the cases that pin doesn't cover (network
+    recreated with a different subnet, compose project renamed, the
+    pin removed later) — those would otherwise leave the rule silently
+    stale until someone thinks to re-run --mode student by hand, which
+    is exactly the failure this is meant to catch. Only meaningful
+    inside --daemon; a one-shot --mode invocation exits immediately.
+    """
+    filters = ["--filter", f"label={DEFENSE_LABEL}", "--filter", "event=start"]
+    if DEFENSE_PROJECT:
+        filters += ["--filter", f"label=com.docker.compose.project={DEFENSE_PROJECT}"]
+    backoff = 1.0
+    while True:
+        try:
+            proc = subprocess.Popen(
+                ["docker", "events", *filters, "--format", "{{.ID}}"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            )
+        except FileNotFoundError:
+            LOG.error("[EVENTS] docker not found; container-restart auto-refresh disabled")
+            return
+
+        backoff = 1.0
+        for line in proc.stdout:
+            cid = line.strip()
+            if not cid:
+                continue
+            mode = get_mode()
+            LOG.info("[EVENTS] defense-system container started (%s); re-applying %s mode",
+                      cid[:12], mode)
+            try:
+                set_mode(mode)
+            except subprocess.CalledProcessError as exc:
+                LOG.error("[EVENTS] re-apply failed: rc=%d stderr=%s",
+                          exc.returncode, exc.stderr)
+
+        proc.wait()
+        LOG.warning("[EVENTS] `docker events` stream ended; reconnecting in %.0fs", backoff)
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 30.0)
+
+
 def daemon_loop() -> None:
     from gpiozero import Button
 
@@ -284,6 +331,11 @@ def daemon_loop() -> None:
     sw.when_pressed = on_change
     sw.when_released = on_change
     on_change()  # apply initial state
+
+    threading.Thread(
+        target=_docker_events_watcher, args=(current_mode,),
+        name="docker-events-watcher", daemon=True,
+    ).start()
 
     LOG.info("[DAEMON] watching GPIO %d (pull_up=True)", SWITCH_GPIO)
     signal.pause()

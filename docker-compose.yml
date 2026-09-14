@@ -65,7 +65,13 @@ services:
       - /usr/src:/usr/src:ro
     command: python3 -u /app/monitor.py
     networks:
-      - honeypot-net
+      honeypot-net:
+        # Pinned so the host firewall rule that whitelists this
+        # container for pigpiod:8888 (see host/mode-switch/) stays
+        # valid across every `docker compose up --build defense-system`
+        # — otherwise a recreated container gets a new IP and the
+        # rule silently goes stale until mode_switch is re-applied.
+        ipv4_address: 172.28.55.10
 
 volumes:
   db_data:
@@ -73,3 +79,6 @@ volumes:
 networks:
   honeypot-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.55.0/24

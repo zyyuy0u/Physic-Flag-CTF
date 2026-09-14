@@ -138,9 +138,20 @@ Defense-container IP is resolved at apply time via
 `docker ps --filter label=com.docker.compose.service=defense-system`.
 If the stack isn't up when student mode applies, the pigpiod rule is
 omitted (logged as `WARNING`) and the servo will not actuate — bring
-docker up, then re-apply or restart the daemon. The daemon does NOT
-auto-refresh on container restart; plan a Docker events watcher if
-the stack churns often.
+docker up, then re-apply or restart the daemon.
+
+Two layers keep the pigpiod rule valid across `defense-system`
+rebuilds without manual re-apply: `docker-compose.yml` pins its IP
+(`172.28.55.10` on `honeypot-net`), so a recreated container keeps the
+same address the existing rule already whitelists; and when the
+`--daemon` systemd service is running, a background thread
+(`_docker_events_watcher`) subscribes to `docker events` for that
+container's start events and calls `set_mode()` again on every one, as
+defense-in-depth for cases the IP pin doesn't cover (network
+recreated with a different subnet, compose project renamed). A
+one-shot `--mode student` invocation has no watcher — only `--daemon`
+does — so after a rebuild while the daemon isn't running, still
+re-apply by hand.
 
 `mode_switch.py` exposes a CLI (`--mode student|teacher`, `--show`)
 for testing without the physical switch. Last applied mode lives at
