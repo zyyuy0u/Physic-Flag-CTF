@@ -260,6 +260,15 @@ def set_mode(mode: str) -> None:
             LOG.info("[MODE] active: %s", mode)
 
 
+def _active_mode(get_mode) -> str:
+    """Last applied mode, so a manual `--mode` override isn't reverted to the switch."""
+    try:
+        mode = STATE_FILE.read_text().strip()
+    except OSError:
+        mode = ""
+    return mode if mode in MODES else get_mode()
+
+
 RECONCILE_INTERVAL_S = 20.0
 
 
@@ -287,10 +296,12 @@ def _reconcile_loop(get_mode) -> None:
     while True:
         time.sleep(RECONCILE_INTERVAL_S)
         try:
-            set_mode(get_mode())
+            set_mode(_active_mode(get_mode))
         except subprocess.CalledProcessError as exc:
             LOG.error("[RECONCILE] re-apply failed: rc=%d stderr=%s",
                       exc.returncode, exc.stderr)
+        except Exception:
+            LOG.exception("[RECONCILE] re-apply failed")
 
 
 def _docker_events_watcher(get_mode) -> None:
@@ -313,6 +324,7 @@ def _docker_events_watcher(get_mode) -> None:
         filters += ["--filter", f"label=com.docker.compose.project={DEFENSE_PROJECT}"]
     backoff = 1.0
     while True:
+        started = time.monotonic()
         try:
             proc = subprocess.Popen(
                 ["docker", "events", *filters, "--format", "{{.Actor.ID}}"],
@@ -322,12 +334,11 @@ def _docker_events_watcher(get_mode) -> None:
             LOG.error("[EVENTS] docker not found; container-restart auto-refresh disabled")
             return
 
-        backoff = 1.0
         for line in proc.stdout:
             cid = line.strip()
             if not cid:
                 continue
-            mode = get_mode()
+            mode = _active_mode(get_mode)
             LOG.info("[EVENTS] defense-system container started (%s); re-applying %s mode",
                       cid[:12], mode)
             try:
@@ -335,8 +346,14 @@ def _docker_events_watcher(get_mode) -> None:
             except subprocess.CalledProcessError as exc:
                 LOG.error("[EVENTS] re-apply failed: rc=%d stderr=%s",
                           exc.returncode, exc.stderr)
+            except Exception:
+                LOG.exception("[EVENTS] re-apply failed")
 
         proc.wait()
+        # Popen succeeds even while dockerd is down (the CLI starts and exits
+        # at once), so only a stream that stayed up resets the backoff.
+        if time.monotonic() - started >= 60:
+            backoff = 1.0
         LOG.warning("[EVENTS] `docker events` stream ended; reconnecting in %.0fs", backoff)
         time.sleep(backoff)
         backoff = min(backoff * 2, 30.0)

@@ -33,7 +33,21 @@ import requests
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8080")
 WORDLIST = os.path.join(os.path.dirname(__file__), "..", "common.txt")
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
-CONTAINER = "iot-honeypot-defense-system-1"
+
+
+def _defense_container() -> str:
+    """Find defense-system by compose label; the name depends on the checkout directory."""
+    names = subprocess.run(
+        ["docker", "ps", "--filter", "label=com.docker.compose.service=defense-system",
+         "--format", "{{.Names}}"],
+        capture_output=True, text=True, check=True,
+    ).stdout.split()
+    if not names:
+        raise SystemExit("找不到 defense-system 容器，請先 docker compose up -d")
+    return names[0]
+
+
+CONTAINER = os.environ.get("DEFENSE_CONTAINER") or _defense_container()
 MAX_WORKERS = 50
 LED1_PATTERN = re.compile(r"\[LED1\]")
 

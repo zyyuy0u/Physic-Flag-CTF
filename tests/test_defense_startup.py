@@ -219,6 +219,21 @@ class DefenseStartupTests(unittest.TestCase):
             self.assertIs(m.connect_pigpio(), candidate)
         m.pigpio.pi.assert_called_once_with("localhost", 8888, show_errors=False)
 
+    def test_failed_servo_command_keeps_reverse_shell_detection_running(self):
+        m = self.monitor
+        dead = MagicMock(connected=True)
+        dead.set_servo_pulsewidth.side_effect = BrokenPipeError("pigpiod restarted")
+        m.pi = dead
+        shell = dict(daddr="203.0.113.7", saddr="172.28.55.3", dport=4444, comm="nc", pid=7, ts_ns=0, recv_ts_ns=1000)
+        probe = MagicMock()
+        probe.iter_events.return_value = iter([types.SimpleNamespace(**shell), types.SimpleNamespace(**shell)])
+        m.BpfReverseShellProbe.return_value = probe
+        with patch.object(m, "motor_cooldown_reset"), self.assertLogs(m.log, level="INFO") as messages:
+            m.bpf_event_consumer([])
+        self.assertEqual(sum("[MOTOR] 命中 Reverse Shell" in line for line in messages.output), 2)
+        self.assertTrue(any("pigpio 指令失敗" in line for line in messages.output))
+        self.assertFalse(any("監控錯誤" in line for line in messages.output))
+
 
 if __name__ == "__main__":
     unittest.main()

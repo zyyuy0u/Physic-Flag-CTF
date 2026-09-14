@@ -52,8 +52,8 @@ sudo python3 host/mode-switch/mode_switch.py --show
 `0.0.0.0` 不代表允許所有用戶端；舊版 README 的指令有誤。
 `-l` 限制本機存取、`-k` 關閉 socket，均不適合目前的容器連線方式。
 
-若沒有現存 daemon，可依 README 使用 `sudo pigpiod -n localhost -n "$DEFENSE_IP"`
-啟動，`DEFENSE_IP` 必須是上述 defense-system 的實際 IPv4。
+`docker-compose.yml` 將 defense-system 固定在 **`172.28.55.10`**，容器重建後 IP 不變。
+若沒有現存 daemon，可執行 `sudo pigpiod -n localhost -n 172.28.55.10` 啟動。
 
 若已有 systemd 服務，先用 `sudo systemctl cat pigpiod` 檢查既有設定，再以
 `sudo systemctl edit pigpiod` 更新 ExecStart。例如 daemon 位於 `/usr/bin/pigpiod` 時：
@@ -61,14 +61,17 @@ sudo python3 host/mode-switch/mode_switch.py --show
 ```ini
 [Service]
 ExecStart=
-ExecStart=/usr/bin/pigpiod -n localhost -n <defense-system的實際IPv4>
+ExecStart=/usr/bin/pigpiod -n localhost -n 172.28.55.10
 ```
 
-將 `<...>` 換成實際 IP，保留你需要的其他硬體參數，並沿用原服務所需的前景／背景模式。
+保留你需要的其他硬體參數，並沿用原服務所需的前景／背景模式。
 然後執行 `sudo systemctl daemon-reload`、`sudo systemctl restart pigpiod`。
-這個允許清單不會自動追蹤 Docker IP；容器重建或 IP 改變後需更新設定。
+舊版的容器 IP 由 Docker 動態分配；若允許清單仍是舊 IP（例如 `172.18.0.x`），
+更新專案後須改成上述固定 IP，否則馬達會連不上。
 
 學生模式另有一層防火牆，只允許防禦容器的來源 IP 從 Docker bridge 存取 8888。
-Docker 啟動後切到教師模式、再切回學生模式，可更新該來源 IP；只換 daemon 設定
-不會更新防火牆。新版監控會背景重試尚未成功的馬達連線。
-若是原本已成功的連線中途斷線，修好 daemon／規則後再重啟 `defense-system`。
+已安裝並啟動 `mode-switch.service` 時，daemon 會在 defense-system 啟動時與每 20 秒
+自動重新套用這條規則；未安裝 daemon 時，Docker 啟動後執行
+`sudo /opt/honeypot/mode-switch/mode_switch.py --mode student`。只換 pigpiod 設定不會更新防火牆。
+新版監控會背景重試尚未成功的馬達連線。若是原本已成功的連線中途斷線，修好 daemon／規則後
+再重啟 `defense-system`；斷線期間 reverse shell 仍會被偵測並記錄 `[MOTOR]`，只是馬達不會動。

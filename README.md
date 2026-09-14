@@ -88,16 +88,16 @@ docker compose ps
 
 馬達需要宿主機的 pigpiod 允許防禦容器連入。**`-n` 是用戶端 IP 允許清單，
 不是監聽位址；舊版說明中的 `-n 0.0.0.0` 有誤。**
-若尚未啟動 pigpiod，可在 Docker 已啟動後執行：
+`docker-compose.yml` 已將 defense-system 固定在 `172.28.55.10`，容器重建後 IP 不變。
+若尚未啟動 pigpiod，執行：
 
 ```bash
-DEFENSE_ID=$(docker compose ps -q defense-system)
-DEFENSE_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$DEFENSE_ID")
-sudo pigpiod -n localhost -n "$DEFENSE_IP"
+sudo pigpiod -n localhost -n 172.28.55.10
 ```
 
 若既有 pigpiod 已由 systemd 管理，應更新該服務的設定並重新啟動，勿另開第二個 daemon。
-容器 IP 改變後須同步更新 pigpiod 的允許清單與學生模式防火牆；完整步驟見
+**從舊版更新者注意**：舊版容器 IP 由 Docker 動態分配，若你的 pigpiod 允許清單寫的是舊 IP，
+須改成 `172.28.55.10`，否則馬達會連不上；完整步驟見
 [GPIO 與 pigpiod 排錯](docs/gpio-troubleshooting.md)。
 
 ## 改用同一個 Wi-Fi 存取

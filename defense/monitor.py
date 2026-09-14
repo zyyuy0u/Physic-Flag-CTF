@@ -470,14 +470,21 @@ def bpf_event_consumer(whitelist):
             fired = False
             t1: int | None = None
             pigpio_ok = False
+            pigpio_error = None
             with motor_lock:
                 if not motor_triggered:
                     motor_triggered = True
                     fired = True
                     if pi and pi.connected:
-                        pi.set_servo_pulsewidth(PIN_SERVO, SERVO_DOWN)
-                        t1 = time.monotonic_ns()
-                        pigpio_ok = True
+                        try:
+                            pi.set_servo_pulsewidth(PIN_SERVO, SERVO_DOWN)
+                            t1 = time.monotonic_ns()
+                            pigpio_ok = True
+                        except Exception as exc:
+                            # A dead pigpiod socket raises here; letting it
+                            # propagate would end this thread and with it all
+                            # reverse-shell detection, not just the motor.
+                            pigpio_error = exc
 
             if not fired:
                 log.info("[MOTOR] 冷卻中 — 跳過 servo 動作（事件已記錄）")
@@ -489,6 +496,8 @@ def bpf_event_consumer(whitelist):
                          (t1 - event.recv_ts_ns) // 1000)
                 log.info("[LATENCY] total kernel→pigpio_return=%dµs",
                          (t1 - event.ts_ns) // 1000)
+            elif pigpio_error is not None:
+                log.error("[MOTOR] pigpio 指令失敗（%r）；偵測持續運作，修復 pigpiod 後請重啟 defense-system", pigpio_error)
             else:
                 log.error("[MOTOR] pigpio 未連線，無法控制馬達！請確認 pigpiod 狀態")
 
